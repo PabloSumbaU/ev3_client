@@ -58,8 +58,6 @@ class _ProgressiveButtonState extends State<ProgressiveButton> with SingleTicker
       }
     });
 
-    log.finest("InitEnabled = ${widget.initEnabled}");
-
     _enabled = widget.initEnabled;
     _previousEnabled = _enabled;
   }
@@ -95,7 +93,6 @@ class _ProgressiveButtonState extends State<ProgressiveButton> with SingleTicker
 
     setState(() {
       _processing = true;
-      log.finest("TapUp: Processing...");
     });
 
     if (widget.manualReenable) {
@@ -121,7 +118,6 @@ class _ProgressiveButtonState extends State<ProgressiveButton> with SingleTicker
   @override
   Widget build(BuildContext context) {
     reinitialize();
-    log.finest("Building: enabled = $_enabled | initEnabled = ${widget.initEnabled}");
     final double size = (widget.iconSize ?? 24) * 1.5;
     return GestureDetector(
       onTapDown: _enabled || _processing ? (details) => _onTapDown() : null,

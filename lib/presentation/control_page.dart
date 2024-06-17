@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_joystick/flutter_joystick.dart';
+import 'package:flutter_vibrate/flutter_vibrate.dart';
 import 'package:logging/logging.dart';
 
 import './components/themed_toggle_button.dart';
@@ -19,6 +20,11 @@ import '../infrastructure/socket_connection.dart';
 import '../infrastructure/voice_recognition.dart';
 
 final Logger log = Logger("Control");
+void hapticFeedback() async {
+  if (await Vibrate.canVibrate) {
+    Vibrate.feedback(FeedbackType.light);
+  }
+}
 
 class ControlPage extends StatelessWidget {
   const ControlPage({super.key});
@@ -170,13 +176,18 @@ class Controls extends HookWidget {
     send("stick:$joyX;$joyY;${_useClaw ? 1 : 0}");
   }
 
-  Future<void> startVoice(BuildContext context, void Function() reenable) async {
-    Timer.periodic(const Duration(seconds: 3), (timer) {
+  Timer ensureReenable(void Function() reenable) {
+    return Timer.periodic(const Duration(seconds: 3), (timer) {
       if (!vRecog!.isListening()) {
         reenable();
         timer.cancel();
       }
     });
+  }
+
+  Future<void> startVoice(BuildContext context, void Function() reenable) async {
+    hapticFeedback();
+    Timer timer = ensureReenable(reenable);
     
     await vRecog!.listen(
       (result) => getInstructionSet(result).then(
@@ -186,7 +197,8 @@ class Controls extends HookWidget {
           } else {
             send("text:$message");
           }
-          
+
+          timer.cancel();
           reenable();
         }
       )
@@ -195,6 +207,7 @@ class Controls extends HookWidget {
 
   Future<void> endVoice({required reenable}) async {
     await vRecog!.stop();
+    hapticFeedback();
   }
 
   @override
@@ -214,8 +227,6 @@ class Controls extends HookWidget {
 
       listenerAdded = true;
     }
-
-    log.finest("Rebuilt: voice enabled: ${voiceInitialized.value}");
     
     return Column(
       children: [
@@ -246,12 +257,20 @@ class Controls extends HookWidget {
                   }
                 },
                 downAction: ({required reenable}) {
+                  // Sometimes hangs showing the progress indicator despite being reenabled, not sure why
+                  hapticFeedback();
+                  Timer timer = ensureReenable(reenable);
+                  
                   return vRecog!.listen((result) {
                     sendSpeech(result);
+                    timer.cancel();
                     reenable();
                   });
                 }, 
-                upAction: ({required reenable}) => vRecog!.stop(), 
+                upAction: ({required reenable}) {
+                  hapticFeedback();
+                  return vRecog!.stop();
+                }, 
                 initEnabled: true,
                 iconData: Icons.speaker,
                 iconSize: 35,
@@ -262,13 +281,20 @@ class Controls extends HookWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            switch(_currentControl){
+            switch(_currentControl) {
               ControlType.joystick => 
                 Joystick(
                   listener: _joystickListener,
                   onStickDragEnd: () => send("stick:*;${_useClaw ? 1 : 0}"),
-                  base: const JoystickBase(color: Colors.blueGrey,),
-                  stick: const JoystickStick(),
+                  base: JoystickBase(color: Theme.of(context).primaryColor.withOpacity(0.75),),
+                  stick: JoystickCustomStick(
+                    shadowColor: Theme.of(context).primaryColor.withOpacity(0.5),
+                    gradientColors: [
+                      Theme.of(context).primaryColor, 
+                      Theme.of(context).highlightColor,
+                      //TODO: Check the colors
+                    ],
+                  ),
                 ),
 
               ControlType.area =>
@@ -276,9 +302,9 @@ class Controls extends HookWidget {
                   width: 300,
                   height: 200,
                   child: DecoratedBox(
-                    decoration: const BoxDecoration(
-                      color: Colors.blueGrey,
-                      borderRadius: BorderRadius.all(Radius.circular(15)),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).primaryColor.withOpacity(0.75),
+                      borderRadius: const BorderRadius.all(Radius.circular(15)),
                     ),
                     child: SafeArea(
                       child: JoystickArea(

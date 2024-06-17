@@ -5,9 +5,6 @@ import 'package:speech_to_text/speech_to_text.dart';
 
 Logger log = Logger("Voice recognition");
 
-// TODO: Find a better way to implement the permission request, right now it conflicts with the speak button since it's not requested
-//  before it can be used
-
 class VoiceRecognition {
   static SpeechToText? _stt;
   static bool _speechEnabled = false;

@@ -45,7 +45,6 @@ class ToggleProgressiveButton extends HookWidget {
     
     useEffect(() {
       toggled.value = initToggled;
-      log.finest("Side effect: initToggled = $initToggled");
       return null;
     }, [initToggled]);
 
