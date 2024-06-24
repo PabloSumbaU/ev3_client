@@ -3,7 +3,7 @@ import 'package:logging/logging.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
-Logger log = Logger("Voice recognition");
+Logger _log = Logger("Voice recognition");
 
 class VoiceRecognition {
   static SpeechToText? _stt;
@@ -15,26 +15,26 @@ class VoiceRecognition {
   static Future<VoiceRecognition?> getInstance(void Function() onError) async {
     if (! await Permission.microphone.isGranted) {
       if (await Permission.microphone.isPermanentlyDenied) {
-        log.warning("Microphone permission is permanently denied");
+        _log.warning("Microphone permission is permanently denied");
       } else {
-        log.fine("Requesting microphone permission...");
+        _log.fine("Requesting microphone permission...");
         await Permission.microphone.request();
       }
     }
 
     if (_stt == null) {
-      log.fine("Instance requested");
+      _log.fine("Instance requested");
       _stt = SpeechToText();
       _speechEnabled = await _stt!.initialize();
-      log.fine("STT initialized");
+      _log.fine("STT initialized");
     }
 
     if (_speechEnabled) {
-      log.fine("STT available, returning instance");
+      _log.fine("STT available, returning instance");
       return VoiceRecognition._();
     }
 
-    log.warning("STT unavailable");
+    _log.warning("STT unavailable");
     onError();
     return null;
   }
@@ -42,10 +42,10 @@ class VoiceRecognition {
   String lastWords = "";
 
   Future<void> listen(Function(String) resultHandler) async {
-    log.fine("Listening started...");
+    _log.fine("Listening started...");
 
     await _stt!.listen(onResult: (result) {
-      log.finest("Recognized: ${result.recognizedWords}");
+      _log.finest("Recognized: ${result.recognizedWords}");
       resultHandler(result.recognizedWords);
     }, listenOptions: options);
   }
@@ -56,7 +56,7 @@ class VoiceRecognition {
 
   Future<void> stop() async {
     await _stt!.stop();
-    log.fine("Listening stopped");
+    _log.fine("Listening stopped");
   }
 }
 
@@ -97,7 +97,7 @@ final instructionMap = {
 };
 
 String? _translateInstructions(String instructionString) {
-  log.finer("Instruction string: $instructionString");
+  _log.finer("Instruction string: $instructionString");
   if (instructionString == '?') {
     return null;
   }
@@ -116,7 +116,7 @@ String? _translateInstructions(String instructionString) {
     }).join('-');
   }).toList();
 
-  log.finer("Instruction set: $instructionList");
+  _log.finer("Instruction set: $instructionList");
 
   return instructionList.join(';');
 }
@@ -130,6 +130,6 @@ const basePrompt =
 
 Future<String?> getInstructionSet(String voiceCommand) async {
   Gemini.initialize();
-  log.finer("Command: $voiceCommand");
+  _log.finer("Command: $voiceCommand");
   return _translateInstructions((await Gemini.generate(basePrompt + voiceCommand)).text!.trim());
 }

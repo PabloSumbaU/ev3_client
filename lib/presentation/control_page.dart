@@ -19,7 +19,7 @@ import './components/progressive_button.dart';
 import '../infrastructure/socket_connection.dart';
 import '../infrastructure/voice_recognition.dart';
 
-final Logger log = Logger("Control");
+final Logger _log = Logger("Control");
 void hapticFeedback() async {
   if (await Vibrate.canVibrate) {
     Vibrate.feedback(FeedbackType.light);
@@ -109,7 +109,7 @@ class SensorBar extends HookWidget {
         break;
 
         default:
-          log.warning("Unhandled or invalid sensor data: $sensor");
+          _log.warning("Unhandled or invalid sensor data: $sensor");
       }
     }
 
@@ -155,7 +155,7 @@ VoiceRecognition? vRecog;
 const SnackBar _voiceUnavailable = SnackBar(content: Text("El reconocimiento de voz no está disponible"));
 
 Future<bool> instantiateVoiceRecognition(BuildContext context) async {
-    log.fine("Initializing voice recognition...");
+    _log.fine("Initializing voice recognition...");
     vRecog = await VoiceRecognition.getInstance(
       () => ScaffoldMessenger.of(context).showSnackBar(_voiceUnavailable)
     );
@@ -220,7 +220,7 @@ class Controls extends HookWidget {
         if (controlType.value == ControlType.voice && vRecog == null) {
           instantiateVoiceRecognition(context).then((value) { 
             voiceInitialized.value = value;
-            log.fine("Voice recognition initialized: ${voiceInitialized.value}");
+            _log.fine("Voice recognition initialized: ${voiceInitialized.value}");
           });
         }
       });
