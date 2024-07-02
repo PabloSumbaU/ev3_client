@@ -1,6 +1,10 @@
 import "dart:async";
 import "dart:isolate";
 
+import "package:logging/logging.dart";
+
+final _log = Logger("Worker");
+
 class _IsolateArgs<T, R> {
   _IsolateArgs(this.sendPort, this.runnable, this.portCallback, this.setWorkerState, this.getWorkerState);
 
@@ -40,11 +44,12 @@ class Worker<T, R> {
   /// `workerListener` will be called on the worker isolate when a message is received from the main isolate.
   /// In order to gracefully terminate the worker isolate, verify the [state] of the worker inside the `runnable` function.
   /// If the state is `WorkerState.terminated`, the function should exit.
-  static Future<Worker> getInstance<T, R>(
+  static Future<Worker<T, R>> getInstance<T, R>(
     void Function(SendPort sendPort, ReceivePort receivePort, WorkerState Function() workerState) runnable,
     R Function(T data) workerListener,
     [void Function(R result)? mainListener]
   ) async {
+    _log.fine("Attempting to create worker instance...");
     var workerState = WorkerState.initializing;
     void setState(WorkerState newState) => workerState = newState;
     getState() => workerState;
@@ -67,18 +72,21 @@ class Worker<T, R> {
       Isolate.spawn(_runIsolate<T, R>, _IsolateArgs<T, R>(initPort.sendPort, runnable, workerListener, setState, getState));
     } on Object {
       //If failed, close the port and rethrow
+      _log.severe("Failed to spawn worker isolate");
       initPort.close();
       rethrow;
     }
 
     //Wait for the connection to complete and destructure the ports
     final (receivePort, sendPort) = await connection.future;
+    _log.fine("Connection complete, returning instance.");
 
     //Return instance of Worker
     return Worker<T, R>._(receivePort, sendPort, mainListener, setState, getState);
   }
 
   static void _runIsolate<T, R>(_IsolateArgs<T, R> args) {
+    _log.fine("Starting worker isolate...");
     //This code runs on the worker isolate
 
     //Creates the ReceivePort for the WORKER isolate

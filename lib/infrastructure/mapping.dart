@@ -1,11 +1,20 @@
+import 'dart:collection';
 import 'dart:math';
 import 'dart:async';
+import 'dart:ui';
 import 'package:ev3_client/utils.dart';
+import 'package:logging/logging.dart';
 import 'socket_connection.dart';
+import 'concurrent.dart';
+import 'image.dart' as img;
+
+final _log = Logger("Mapping");
 
 bool _sensorListener = false;
 bool _registerValues = false;
 List<int> _sensorValues = [];
+// This might not be reachable from within the isolate.
+int _lastValue = 0;
 
 void _ensureListener() {
   if (_sensorListener) {
@@ -13,16 +22,19 @@ void _ensureListener() {
   }
 
   sensorListen((sensorData) {
-    if (_registerValues) {
-      List<String> data = sensorData.split(';');
-      for (String string in data) {
-        List<String> value = string.split(':');
+    // A completer might be a better approach
+    List<String> data = sensorData.split(';');
+    for (String string in data) {
+      List<String> value = string.split(':');
 
-        if (value[0] != 'ir') {
-          continue;
-        }
+      if (value[0] != 'ir') {
+        continue;
+      }
 
+      if (_registerValues) {
         _sensorValues.add(int.parse(value[1]));
+      } else {
+        _lastValue = int.parse(value[1]);
       }
     }
   });
@@ -67,86 +79,190 @@ Future<double> _certainty(int sensorValue) async {
   return certainty.clamp(0.0, 1.0);
 }
 
-enum Direction {
-  up, down, left, right
+enum Commands {
+  render, clear
 }
 
 class Map {
-  // Robot is around 30 cm in length (27 to be more precise)
-  static const cellSize = 30;
-
-  Map(): map = [[0.0]], origin = const Point(0, 0);
-
-  List<List<double>> map;
-  Point<int> origin;
-
-
-  void expand(Direction direction) {
-    switch (direction) {
-      case Direction.up:
-        map.insert(0, List<double>.filled(map[0].length, 0.0));
-        origin = Point(origin.x, origin.y + 1);
-        break;
-      case Direction.down:
-        map.add(List<double>.filled(map[0].length, 0.0));
-        break;
-      case Direction.left:
-        for (int i = 0; i < map.length; i++) {
-          map[i].insert(0, 0.0);
-        }
-        origin = Point(origin.x + 1, origin.y);
-        break;
-      case Direction.right:
-        for (int i = 0; i < map.length; i++) {
-          map[i].add(0.0);
-        }
-        break;
-    }
+  // Robot is around 30 cm in length (~27 to be more precise)
+  Map(): _map = HashMap(), currentQuadrant = const Point(0, 0) {
+    createChunks(currentQuadrant);
   }
 
-  void setCell(Point<int> position, double lookAngle, int sensorValue) async {
+  HashMap<Point<int>, _Chunk> _map;
+  Point<int> currentQuadrant;
+  static const renderDistance = 1;
+
+  static Future<Worker<Commands, Future<Image>>> startConcurrent() {
+    //TODO: Might not be reachable from within the isolate, consider a store in the worker class to circumvent.
+    final temp = <Map>[];
+    return Worker.getInstance<Commands, Future<Image>>(
+      (sendPort, receivePort, workerState) {
+        final map = Map();
+        temp.add(map);
+        Timer.periodic(const Duration(milliseconds: 500), 
+        (timer) {
+          map.update();
+
+          if (workerState() == WorkerState.terminated) {
+            timer.cancel();
+          }
+        });
+      }, 
+      (Commands data) {
+        const mapSize = _Chunk.cellSize * _Chunk.chunkSize * renderDistance;
+        
+        switch (data) {
+          case Commands.render:
+            final map = temp[0];
+            return img.fromDoubleList(
+              map.getCurrentMapData(), 
+              mapSize, 
+              mapSize, 
+              const Color.fromARGB(255, 177, 104, 231)
+            );
+
+          case Commands.clear:
+            return img.clearImage(mapSize, mapSize);
+        }
+      }, 
+    );
+  }
+
+  ///This function ensures the required chunk and the ones surrounding it in a radius around the center point [quadrant]
+  ///are created. The radius is the render distance of the map. The specific amount of chunks created is (`renderDistance` * 2 + 1)².
+  _Chunk createChunks(Point<int> quadrant) {
+    _Chunk center = _map.putIfAbsent(quadrant, () => _Chunk(quadrant));
+
+    for (int x = -renderDistance; x <= renderDistance; x++) {
+      for (int y = -renderDistance; y <= renderDistance; y++) {
+        Point<int> newQuadrant = Point(quadrant.x + x, quadrant.y + y);
+        _map.putIfAbsent(newQuadrant, () => _Chunk(newQuadrant));
+      }
+    }
+
+    return center;
+  }
+
+  ///Creates a list representing the data of the map at and around the center point [quadrant] with the radius being the render
+  ///distance of the map.
+  List<double> getMapData(Point<int> quadrant) {
+    List<double> data = [];
+
+    for (int x = -renderDistance; x <= renderDistance; x++) {
+      for (int chunkRow = 0; chunkRow < _Chunk.chunkSize; chunkRow++) {
+        for (int y = -renderDistance; y <= renderDistance; y++) {
+          Point<int> newQuadrant = Point(quadrant.x + x, quadrant.y + y);
+          _Chunk? chunk = _map[newQuadrant];
+
+          if (chunk == null) {
+            _log.severe("Failed to get chunk at $newQuadrant");
+            throw StateError("Failed to get chunk at $newQuadrant");	
+          }
+
+          data.addAll(chunk.mapRegion[chunkRow]); 
+        }
+      }
+    }
+
+    return data;
+  }
+
+  List<double> getCurrentMapData() {
+    return getMapData(currentQuadrant);
+  }
+
+  ///This function returns the quadrant of the given cell.
+  Point<int> getQuadrant(Point<int> cell) {
+    return Point<int>((cell.x / _Chunk.chunkSize).ceil(), (cell.y / _Chunk.chunkSize).ceil());
+  }
+
+  void update() async {
+    //TODO: Get robot position
+    Point<double> position = const Point(0, 0);
+
+    //TODO: Get robot angle
+    double lookAngle = 0.0;
+
+    //TODO: Get sensor value
+    int sensorValue = _lastValue;
+
     double distance = _sensorToCm(sensorValue);
     
-    double xDistanceInCells = distance * cos(deg2rad(lookAngle)) / cellSize;
-    double yDistanceInCells = distance * sin(deg2rad(lookAngle)) / cellSize;
+    Point<int> cellDistance = Point<int>(
+      (distance * cos(deg2rad(lookAngle)) / _Chunk.cellSize).ceil(),
+      (distance * sin(deg2rad(lookAngle)) / _Chunk.cellSize).ceil()
+    );
 
-    int x = position.x + xDistanceInCells.ceil();
-    int y = position.y + yDistanceInCells.ceil();
+    Point<int> cellPosition = Point(position.x.floor(), position.y.floor());
+    Point<int> affectedCell = cellPosition + cellDistance;
 
-    int leftBound = -origin.x;
-    int rightBound = leftBound + map[0].length;
-    int topBound = -origin.y;
-    int bottomBound = topBound + map.length;
+    currentQuadrant = getQuadrant(cellPosition);
 
-    //Always account for one extra cell when expanding
-    if (x < leftBound) {
-      int delta = leftBound - x;
+    double certainty = await _certainty(sensorValue);
 
-      for (int i = 0; i < delta + 1; i++) {
-        expand(Direction.left);
-      }
-    } else if (x > rightBound) {
-      int delta = x - rightBound;
+    Point<int> quadrant = getQuadrant(affectedCell);
+    _Chunk? affectedChunk = _map[quadrant];
 
-      for (int i = 0; i < delta + 1; i++) {
-        expand(Direction.right);
-      }
+    if (affectedChunk == null) {
+      affectedChunk = _Chunk(quadrant);
+      _map[quadrant] = affectedChunk;
     }
 
-    if (y < topBound) {
-      int delta = topBound - y;
+    affectedChunk.setCell(affectedCell, certainty);
+  }
+}
 
-      for (int i = 0; i < delta + 1; i++) {
-        expand(Direction.up);
-      }
-    } else if (y > bottomBound) {
-      int delta = y - bottomBound;
+class _Chunk {
+  _Chunk(this.quadrant): 
+    coordBound = Point<int>(quadrant.x * cellSize * chunkSize, quadrant.y * cellSize * chunkSize),
+    cellBound = Point<int>(quadrant.x * chunkSize, quadrant.y * chunkSize);
 
-      for (int i = 0; i < delta + 1; i++) {
-        expand(Direction.down);
-      }
+  static const cellSize = 30; //Cell size is 30 cm
+  static const chunkSize = 30;  //Chunk size is 30 cells
+  //Generate immutable matrix of chunkSize x chunkSize cells
+  final List<List<double>> mapRegion = 
+    List<List<double>>.generate(
+      chunkSize, 
+      (index) => 
+        List<double>.generate(
+          chunkSize, 
+          (index) => 0.0, 
+          growable: false
+        ),
+      growable: false
+    );
+  final Point<int> quadrant;  //Quadrant of the chunk
+  final Point<int> coordBound;  //Global coordinate of the top left corner of the chunk
+  final Point<int> cellBound; //Global cell of the top left corner of the chunk
+  
+  static Point<T> coordAbs<T extends num>(Point<T> coord) {
+    return Point(coord.x.abs() as T, coord.y.abs() as T);
+  }
+
+  Point<double> translate(Point<double> globalCoords) {
+    Point<int> temp = coordAbs(coordBound);
+    Point<double> quadrantCoord = Point(temp.x.toDouble(), temp.y.toDouble());
+    Point<double> global = coordAbs(globalCoords);
+
+    return coordAbs(global - quadrantCoord);
+  }
+
+  Point<int> translateCell(Point<int> globalCell) {
+    Point<int> quadrantCell = coordAbs(cellBound);
+    Point<int> global = coordAbs(globalCell);
+
+    return coordAbs(global - quadrantCell);
+  }
+
+  void setCell(Point<int> affectedCellGlobal, double certainty) {
+    Point<int> localCell = translateCell(affectedCellGlobal);
+
+    if (localCell.x < 0 || localCell.x > chunkSize || localCell.y < 0 || localCell.y > chunkSize) {
+      _log.warning("Cell is outside of chunk");
+      return;
     }
-    
-    map[origin.y + y][origin.x + x] = await _certainty(sensorValue);
+
+    mapRegion[localCell.x][localCell.y] = certainty;
   }
 }

@@ -7,7 +7,8 @@ void main() {
   Logger.root.level = Level.ALL;
   Logger.root.onRecord.listen((record) {
     String color = "";
-    String reset = "\x1B[0m";
+    const String reset = "\x1B[0m";
+    const String nameColor = "\e[1;92m";
     
     switch (record.level) {
       case Level.FINEST:
@@ -34,7 +35,7 @@ void main() {
     }
 
     //ignore: avoid_print
-    print('$color${record.level.name}: ${record.time}: ${record.message}$reset');
+    print('$nameColor[${record.loggerName}]$reset $color${record.level.name}: ${record.time}: ${record.message}$reset');
   });
   runApp(const MainApp());
 }
