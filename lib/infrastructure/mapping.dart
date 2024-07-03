@@ -4,80 +4,11 @@ import 'dart:async';
 import 'dart:ui';
 import 'package:ev3_client/utils.dart';
 import 'package:logging/logging.dart';
-import 'socket_connection.dart';
+import 'socket_connection.dart' as sensor;
 import 'concurrent.dart';
 import 'image.dart' as img;
 
 final _log = Logger("Mapping");
-
-bool _sensorListener = false;
-bool _registerValues = false;
-List<int> _sensorValues = [];
-// This might not be reachable from within the isolate.
-int _lastValue = 0;
-
-void _ensureListener() {
-  if (_sensorListener) {
-    return;
-  }
-
-  sensorListen((sensorData) {
-    // A completer might be a better approach
-    List<String> data = sensorData.split(';');
-    for (String string in data) {
-      List<String> value = string.split(':');
-
-      if (value[0] != 'ir') {
-        continue;
-      }
-
-      if (_registerValues) {
-        _sensorValues.add(int.parse(value[1]));
-      } else {
-        _lastValue = int.parse(value[1]);
-      }
-    }
-  });
-
-  _sensorListener = true;
-}
-
-Future<List<int>> _getSensorValues([Duration dur = const Duration(seconds: 3)]) async {
-  _ensureListener();
-  
-  _registerValues = true;
-
-  Timer(dur, () {
-    _registerValues = false;
-  });
-
-  return Future.delayed(dur, () => _sensorValues);
-}
-
-double _sensorToCm(int sensorValue) {
-  // Sensor max distance (100%) is equal to around 70 cm
-  return sensorValue * 70 / 100;
-}
-
-double _baselineVal = -1;
-
-Future<double> _baseline([recalibrate = false]) async {
-  if (_baselineVal != -1 && !recalibrate) {
-    return _baselineVal;
-  }
-
-  List<int> sensorValues = await _getSensorValues();
-
-  _baselineVal = sensorValues.reduce((a, b) => a + b) / sensorValues.length;
-  return _baselineVal.clamp(0.1, 100.0);
-}
-
-Future<double> _certainty(int sensorValue) async {
-  double baseline = await _baseline();
-  double certainty = (baseline - sensorValue) / baseline;
-
-  return certainty.clamp(0.0, 1.0);
-}
 
 enum Commands {
   render, clear
@@ -85,12 +16,13 @@ enum Commands {
 
 class Map {
   // Robot is around 30 cm in length (~27 to be more precise)
-  Map(): _map = HashMap(), currentQuadrant = const Point(0, 0) {
+  Map(this.getSensorValue): _map = HashMap(), currentQuadrant = const Point(0, 0) {
     createChunks(currentQuadrant);
   }
 
   HashMap<Point<int>, _Chunk> _map;
   Point<int> currentQuadrant;
+  int Function() getSensorValue;
   static const renderDistance = 1;
 
   static Future<Worker<Commands, Future<Image>>> startConcurrent() {
@@ -98,7 +30,22 @@ class Map {
     final temp = <Map>[];
     return Worker.getInstance<Commands, Future<Image>>(
       (sendPort, receivePort, workerState) {
-        final map = Map();
+        final map = Map(
+          () {
+            List<String> data = sensor.getLastSensorValue().split(';');
+            for (String string in data) {
+              List<String> value = string.split(':');
+
+              if (value[0] != 'ir') {
+                continue;
+              }
+              
+              return int.parse(value[1]);
+            }
+
+            return -1;
+          },
+        );
         temp.add(map);
         Timer.periodic(const Duration(milliseconds: 500), 
         (timer) {
@@ -185,7 +132,7 @@ class Map {
     double lookAngle = 0.0;
 
     //TODO: Get sensor value
-    int sensorValue = _lastValue;
+    int sensorValue = getSensorValue();
 
     double distance = _sensorToCm(sensorValue);
     
@@ -210,6 +157,59 @@ class Map {
     }
 
     affectedChunk.setCell(affectedCell, certainty);
+  }
+
+  Future<List<int>> _getSensorValues([Duration dur = const Duration(seconds: 3)]) async {
+    _log.fine("Collecting sensor values with duration $dur");
+    Completer<List<int>> dataCollected = Completer.sync();
+    List<int> sensorValues = [];
+    bool stop = false;
+
+    Timer(dur, () {
+      stop = true;
+      _log.fine("Time's up!");
+
+      dataCollected.complete(sensorValues);
+    });
+
+    Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      sensorValues.add(getSensorValue());
+
+      if (stop) {
+        timer.cancel();
+      }
+    });
+
+    return await dataCollected.future;
+  }
+
+  double _sensorToCm(int sensorValue) {
+    // Sensor max distance (100%) is equal to around 70 cm
+    return sensorValue * 70 / 100;
+  }
+
+  double _baselineVal = -1;
+
+  Future<double> _baseline([recalibrate = false]) async {
+    if (_baselineVal != -1 && !recalibrate) {
+      return _baselineVal;
+    }
+
+    _log.fine("Calibrating sensor baseline...");
+
+    List<int> sensorValues = await _getSensorValues();
+
+    _log.fine("Sensor data collected: $sensorValues");
+
+    _baselineVal = sensorValues.reduce((a, b) => a + b) / sensorValues.length;
+    return _baselineVal.clamp(0.1, 100.0);
+  }
+
+  Future<double> _certainty(int sensorValue) async {
+    double baseline = await _baseline();
+    double certainty = (baseline - sensorValue) / baseline;
+
+    return certainty.clamp(0.0, 1.0);
   }
 }
 

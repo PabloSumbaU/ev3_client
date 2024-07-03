@@ -8,7 +8,7 @@ void main() {
   Logger.root.onRecord.listen((record) {
     String color = "";
     const String reset = "\x1B[0m";
-    const String nameColor = "\e[1;92m";
+    const String nameColor = "\x1B[1;92m";
     
     switch (record.level) {
       case Level.FINEST:

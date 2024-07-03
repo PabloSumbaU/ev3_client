@@ -15,6 +15,7 @@ import './components/themed_cycling_button.dart';
 import './components/sensor_widget.dart';
 import './components/custom_stick.dart';
 import './components/progressive_button.dart';
+import './components/map_widget.dart';
 
 import '../infrastructure/socket_connection.dart';
 import '../infrastructure/voice_recognition.dart';
@@ -28,6 +29,7 @@ void hapticFeedback() async {
 
 class ControlPage extends StatelessWidget {
   const ControlPage({super.key});
+
   final SnackBar _disconnected = const SnackBar(content: Text("Desconectado"));
 
   @override
@@ -41,7 +43,16 @@ class ControlPage extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              SensorBar(),
+              Stack(
+                children: [
+                  SensorBar(),
+                  Positioned(
+                    top: 0,
+                    right: 0,
+                    child: MapWidget(),
+                  )
+                ],
+              ),
               Controls(),
             ],
           ),
@@ -73,7 +84,7 @@ class SensorBar extends HookWidget {
     final sensorData = useState("-");
     
     useEffect(() {
-      sensorListen((message) {sensorData.value = message;});
+      addSensorCallback((message) {sensorData.value = message;});
       return;
     }, []);
 

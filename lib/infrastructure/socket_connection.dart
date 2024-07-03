@@ -6,6 +6,8 @@ final _log = Logger("Socket Connection");
 Socket? _mainSocket;
 Socket? _sensorSocket;
 Socket? _speechSocket;
+List<void Function(String message)> _callbacks = [];
+String _lastValue = "";
 
 bool isConnected() {
   return _mainSocket != null;
@@ -19,6 +21,14 @@ Future<void> connect(String ipAddress, [int port=8000, int sensorPort=8001, int 
     _log.fine("Sensor socket connection established");
     _speechSocket = await Socket.connect(ipAddress, speechPort, timeout: const Duration(seconds: 60));
     _log.fine("Speech socket connection established");
+
+    _sensorListen((message) {
+      _lastValue = message;
+
+      for (var callback in _callbacks) {
+        callback(message);
+      }
+    });
   } on SocketException catch (e) {
     _log.severe("Connection failed: ${e.message}");
   }
@@ -36,11 +46,23 @@ void sendSpeech(String message) {
   _speechSocket!.write(message);
 }
 
-void sensorListen(void Function(String) callback) {
+void _sensorListen(void Function(String message) callback) {
   _sensorSocket!.listen((event) {callback(utf8.decode(event).split(messageEnd)[0]);});
+}
+
+void addSensorCallback(void Function(String message) callback) {
+  _callbacks.add(callback);
+}
+
+String getLastSensorValue() {
+  return _lastValue;
 }
 
 void disconnect() {
   _mainSocket!.close();
   _sensorSocket!.close();
+  _speechSocket!.close();
+
+  _callbacks.clear();
+  _lastValue = "";
 }

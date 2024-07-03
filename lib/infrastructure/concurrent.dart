@@ -49,10 +49,7 @@ class Worker<T, R> {
     R Function(T data) workerListener,
     [void Function(R result)? mainListener]
   ) async {
-    _log.fine("Attempting to create worker instance...");
-    var workerState = WorkerState.initializing;
-    void setState(WorkerState newState) => workerState = newState;
-    getState() => workerState;
+    _log.fine("Instance requested");
     
     //RawReceivePort so we can perform the initial handshake between isolates to exchange ports
     final initPort = RawReceivePort();
@@ -67,9 +64,13 @@ class Worker<T, R> {
       connection.complete((ReceivePort.fromRawReceivePort(initPort), commandPort));
     };
 
+    final (getState, setState) = workerStates();
+
     try {
       //Attempt to spawn the worker isolate
-      Isolate.spawn(_runIsolate<T, R>, _IsolateArgs<T, R>(initPort.sendPort, runnable, workerListener, setState, getState));
+      _log.finest("Attempting to spawn worker isolate");
+      Isolate.spawn(_runIsolate, _IsolateArgs<T, R>(initPort.sendPort, runnable, workerListener, setState, getState));
+      _log.fine("Isolate spawned, waiting for connection.");
     } on Object {
       //If failed, close the port and rethrow
       _log.severe("Failed to spawn worker isolate");
@@ -78,11 +79,20 @@ class Worker<T, R> {
     }
 
     //Wait for the connection to complete and destructure the ports
-    final (receivePort, sendPort) = await connection.future;
+    //final (receivePort, sendPort) = await connection.future;
+    final receivePort = ReceivePort();
+    final sendPort = initPort.sendPort;
     _log.fine("Connection complete, returning instance.");
 
     //Return instance of Worker
     return Worker<T, R>._(receivePort, sendPort, mainListener, setState, getState);
+  }
+
+  static (WorkerState Function(), void Function(WorkerState newState)) workerStates() {
+    var workerState = WorkerState.initializing;
+    void setState(WorkerState newState) => workerState = newState;
+    getState() => workerState;
+    return (getState, setState);
   }
 
   static void _runIsolate<T, R>(_IsolateArgs<T, R> args) {
@@ -95,7 +105,7 @@ class Worker<T, R> {
     final sendPort = args.sendPort;
 
     //Sends the ReceivePort reference back to the main isolate
-    sendPort.send(receivePort);
+    sendPort.send(receivePort.sendPort);
 
     //Registers the worker isolate receiver callback:
     //When a message from the main isolate is received, attempts to run the callback, if an error occurs, sends it back to the
