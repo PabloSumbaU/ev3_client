@@ -1,42 +1,10 @@
+import 'package:ev3_client/utils.dart';
 import 'package:flutter/material.dart';
-import 'package:logging/logging.dart';
 
 import 'presentation/connect_page.dart';
 
 void main() {
-  Logger.root.level = Level.ALL;
-  Logger.root.onRecord.listen((record) {
-    String color = "";
-    const String reset = "\x1B[0m";
-    const String nameColor = "\x1B[1;92m";
-    
-    switch (record.level) {
-      case Level.FINEST:
-        color = "\x1B[37m";
-        break;
-
-      case Level.FINER:
-        color = "\x1B[36m";
-        break;
-      
-      case Level.FINE:
-        color = "\x1B[32m";
-        break;
-      
-      case Level.SEVERE:
-        color = "\x1B[31m";
-        break;
-
-      case Level.WARNING:
-        color = "\x1B[33m";
-        break;
-      default:
-        color = "";
-    }
-
-    //ignore: avoid_print
-    print('$nameColor[${record.loggerName}]$reset $color${record.level.name}: ${record.time}: ${record.message}$reset');
-  });
+  initializeLogger();
   runApp(const MainApp());
 }
 

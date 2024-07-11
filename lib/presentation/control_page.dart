@@ -40,20 +40,20 @@ class ControlPage extends StatelessWidget {
       body: const Center(
         child: Padding(
           padding: EdgeInsets.fromLTRB(8, 15, 8, 8),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
+          child: Stack(
             children: [
-              Stack(
+              Column(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
                   SensorBar(),
-                  Positioned(
-                    top: 0,
-                    right: 0,
-                    child: MapWidget(),
-                  )
+                  Controls(),
                 ],
               ),
-              Controls(),
+              Positioned(
+                top: 0,
+                right: 0,
+                child: MapWidget(),
+              )
             ],
           ),
         ),

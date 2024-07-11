@@ -1,40 +1,36 @@
-import 'dart:async';
-import 'dart:typed_data';
-import 'dart:ui';
+import 'dart:ui' as ui;
 
-Future<Image> clearImage(int width, int height) {
-  final c = Completer<Image>();
-  decodeImageFromPixels(Uint8List(1), width, height, PixelFormat.rgba8888, c.complete);
-  return c.future;
-}
+import 'package:logging/logging.dart';
+import 'package:image/image.dart' as img;
 
-Future<Image> makeImage(int width, int height, Int32List pixels) {
-  final c = Completer<Image>();
+final _log = Logger("Image");
 
-  decodeImageFromPixels(
-    pixels.buffer.asUint8List(),
-    width,
-    height,
-    PixelFormat.rgba8888,
-    c.complete,
-  );
-  return c.future;
-}
+img.Image clearImage(int width, int height) {
+  final image = img.Image(width: width, height: height);
 
-Int32List encode(List<Color> pixels) {
-  final encodedPixels = Int32List(pixels.length);
-  
-  for (int i = 0; i < pixels.length; i++) {
-    final red = pixels[i].red;
-    final green = pixels[i].green;
-    final blue = pixels[i].blue;
-    final alpha = pixels[i].alpha;
-
-    // Why. Just why. Why must you not offer ARGB8888 as a pixel format for image decodification when your Colors use it?
-    encodedPixels[i] = (red << 24) | (green << 16) | (blue << 8) | alpha;
+  for (var pixel in image) {
+    pixel.a = 0;
+    pixel.r = 0;
+    pixel.g = 0;
+    pixel.b = 0;
   }
 
-  return encodedPixels;
+  return image;
+}
+
+img.Image makeImage(int width, int height, List<ui.Color> pixels) {
+  final image = img.Image(width: width, height: height, numChannels: 4);
+  int i = 0;
+
+  for (var pixel in image) {
+    pixel.a = pixels[i].alpha;
+    pixel.r = pixels[i].red;
+    pixel.g = pixels[i].green;
+    pixel.b = pixels[i].blue;
+    i++;
+  }
+
+  return image;
 }
 
 /// Creates an image from a matrix of double values. Each value in the matrix represents the transparency (or alpha)
@@ -43,25 +39,25 @@ Int32List encode(List<Color> pixels) {
 /// If the optional `background` argument is provided, it will be used as the background color of the image and the 
 /// `foreground` color will be blended with it.
 /// The values of `matrix` should be clamped between 0.0 and 1.0.
-Future<Image> fromDoubleMatrix(List<List<double>> matrix, Color foreground, [Color? background]) {
+img.Image fromDoubleMatrix(List<List<double>> matrix, ui.Color foreground, [ui.Color? background]) {
   final width = matrix[0].length;
   final height = matrix.length;
-  final pixels = <Color>[];
+  final pixels = <ui.Color>[];
 
   for (var i = 0; i < matrix.length; i++) {
     for (var j = 0; j < matrix[i].length; j++) {
       final alpha = matrix[i][j];
-      final foregroundPixel = Color.fromARGB((alpha * 255).truncate(), foreground.red, foreground.green, foreground.blue);
+      final foregroundPixel = ui.Color.fromARGB((alpha * 255).truncate(), foreground.red, foreground.green, foreground.blue);
 
       if (background != null) {
-        pixels.add(Color.alphaBlend(foregroundPixel, background));
+        pixels.add(ui.Color.alphaBlend(foregroundPixel, background));
       } else {
         pixels.add(foregroundPixel);
       }
     }
   }
 
-  return makeImage(width, height, encode(pixels));
+  return makeImage(width, height, pixels);
 }
 
 /// Creates an image from a list of double values. Each value in the list represents the transparency (or alpha)
@@ -70,19 +66,20 @@ Future<Image> fromDoubleMatrix(List<List<double>> matrix, Color foreground, [Col
 /// If the optional `background` argument is provided, it will be used as the background color of the image and the 
 /// `foreground` color will be blended with it.
 /// The values of `list` should be clamped between 0.0 and 1.0.
-Future<Image> fromDoubleList(List<double> list, int width, int height, Color foreground, [Color? background]) {
-  final pixels = <Color>[];
+img.Image fromDoubleList(List<double> list, int width, int height, ui.Color foreground, [ui.Color? background]) {
+  final pixels = <ui.Color>[];
 
   for (var i = 0; i < list.length; i++) {
     final alpha = list[i];
-    final foregroundPixel = Color.fromARGB((alpha * 255).truncate(), foreground.red, foreground.green, foreground.blue);
+
+    final foregroundPixel = ui.Color.fromARGB((alpha * 255).truncate(), foreground.red, foreground.green, foreground.blue);
 
     if (background != null) {
-      pixels.add(Color.alphaBlend(foregroundPixel, background));
+      pixels.add(ui.Color.alphaBlend(foregroundPixel, background));
     } else {
       pixels.add(foregroundPixel);
     }
   }
 
-  return makeImage(width, height, encode(pixels));
+  return makeImage(width, height, pixels);
 }

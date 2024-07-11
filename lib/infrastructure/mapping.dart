@@ -4,11 +4,21 @@ import 'dart:async';
 import 'dart:ui';
 import 'package:ev3_client/utils.dart';
 import 'package:logging/logging.dart';
-import 'socket_connection.dart' as sensor;
+import 'package:image/image.dart' as img;
+import 'socket_connection.dart' as socket;
 import 'concurrent.dart';
-import 'image.dart' as img;
+import 'image.dart' as imaging;
 
 final _log = Logger("Mapping");
+
+class ImageData {
+  ImageData(this.pixels, this.width, this.height, this.foreground, this.background);
+
+  final List<double>? pixels;
+  final int width, height;
+  final Color foreground;
+  final Color? background;
+}
 
 enum Commands {
   render, clear
@@ -16,23 +26,43 @@ enum Commands {
 
 class Map {
   // Robot is around 30 cm in length (~27 to be more precise)
-  Map(this.getSensorValue): _map = HashMap(), currentQuadrant = const Point(0, 0) {
-    createChunks(currentQuadrant);
+  Map({required this.getSensorValue, required this.getPosition}): _map = HashMap(), currentQuadrant = const Point(0, 0) {
+    _createChunks(currentQuadrant);
   }
 
-  HashMap<Point<int>, _Chunk> _map;
+  final HashMap<Point<int>, _Chunk> _map;
   Point<int> currentQuadrant;
   int Function() getSensorValue;
+  (double x, double y, double angle) Function() getPosition;
   static const renderDistance = 1;
+  static const mapSize = _Chunk.chunkSize * (2 * renderDistance + 1);
+  static const timeBetweenUpdates = 20;
 
-  static Future<Worker<Commands, Future<Image>>> startConcurrent() {
-    //TODO: Might not be reachable from within the isolate, consider a store in the worker class to circumvent.
-    final temp = <Map>[];
-    return Worker.getInstance<Commands, Future<Image>>(
-      (sendPort, receivePort, workerState) {
+  static Future<Worker<Commands, img.Image>> startConcurrent() async {
+    var worker = await Worker.getInstance<Commands, img.Image>(
+      runnable: (sendPort, receivePort, workerState, store) async {
+        Completer<void> dataCollected = Completer.sync();
+        int count = 1;
+        
+        Timer.periodic(const Duration(seconds: 1), (timer) {
+          var value = store["sensorValue"];
+          _log.finer("Value: $value");
+          
+          if (value != null) {
+            dataCollected.complete();
+            timer.cancel();
+            return;
+          }
+
+          _log.finer("Waiting for sensor data... x$count");
+          count++;
+        });
+
+        await dataCollected.future;
+
         final map = Map(
-          () {
-            List<String> data = sensor.getLastSensorValue().split(';');
+          getSensorValue: () {
+            List<String> data = store["sensorValue"].split(';');
             for (String string in data) {
               List<String> value = string.split(':');
 
@@ -45,9 +75,18 @@ class Map {
 
             return -1;
           },
+
+          getPosition: () {
+            List<String> data = store["position"].split(';');
+            var values = data.map((e) => double.parse(e)).toList();
+            
+            return (values[0], values[1], values[2]);
+          },
         );
-        temp.add(map);
-        Timer.periodic(const Duration(milliseconds: 500), 
+
+        store['map'] = map;
+
+        Timer.periodic(const Duration(milliseconds: timeBetweenUpdates), 
         (timer) {
           map.update();
 
@@ -55,30 +94,41 @@ class Map {
             timer.cancel();
           }
         });
-      }, 
-      (Commands data) {
-        const mapSize = _Chunk.cellSize * _Chunk.chunkSize * renderDistance;
+      },
+      workerListener: (Commands data, store) async {
+        const foreground = Color.fromARGB(255, 177, 104, 231);
+        const background = Color.fromARGB(255, 0, 0, 0);
+        final map = store['map'] as Map?;
+
+        if (map == null) {
+          return imaging.clearImage(mapSize, mapSize);
+        }
         
         switch (data) {
           case Commands.render:
-            final map = temp[0];
-            return img.fromDoubleList(
-              map.getCurrentMapData(), 
-              mapSize, 
-              mapSize, 
-              const Color.fromARGB(255, 177, 104, 231)
-            );
+            return imaging.fromDoubleList(map.getCurrentMapData(), mapSize, mapSize, foreground, null);
 
           case Commands.clear:
-            return img.clearImage(mapSize, mapSize);
+            return imaging.clearImage(mapSize, mapSize);
         }
-      }, 
+      },
+      workerName: "Map"
     );
+
+    socket.addSensorCallback((message) {
+      worker.store(key: "sensorValue", value: message);
+    });
+
+    socket.addPositionCallback((x, y, angle) {
+      worker.store(key: "position", value: "$x;$y;$angle");
+    });
+
+    return worker;
   }
 
   ///This function ensures the required chunk and the ones surrounding it in a radius around the center point [quadrant]
   ///are created. The radius is the render distance of the map. The specific amount of chunks created is (`renderDistance` * 2 + 1)².
-  _Chunk createChunks(Point<int> quadrant) {
+  _Chunk _createChunks(Point<int> quadrant) {
     _Chunk center = _map.putIfAbsent(quadrant, () => _Chunk(quadrant));
 
     for (int x = -renderDistance; x <= renderDistance; x++) {
@@ -117,21 +167,27 @@ class Map {
 
   List<double> getCurrentMapData() {
     return getMapData(currentQuadrant);
-  }
+  } 
 
   ///This function returns the quadrant of the given cell.
   Point<int> getQuadrant(Point<int> cell) {
-    return Point<int>((cell.x / _Chunk.chunkSize).ceil(), (cell.y / _Chunk.chunkSize).ceil());
+    return Point<int>((cell.x / _Chunk.chunkSize).floor(), (cell.y / _Chunk.chunkSize).floor());
   }
 
   void update() async {
-    //TODO: Get robot position
-    Point<double> position = const Point(0, 0);
+    if (_calibrating) {
+      return;
+    }
 
-    //TODO: Get robot angle
-    double lookAngle = 0.0;
+    final (x, y, angle) = getPosition();
+    //FIXME: App became unresponsive and robot got stuck.
+    _log.finest("Position: $x, $y, $angle");
 
-    //TODO: Get sensor value
+    Point<double> position = Point(x, y);
+    position = Point(position.x + 15, position.y + 15);
+
+    double lookAngle = angle;
+
     int sensorValue = getSensorValue();
 
     double distance = _sensorToCm(sensorValue);
@@ -189,11 +245,16 @@ class Map {
   }
 
   double _baselineVal = -1;
+  bool _calibrating = false;
 
   Future<double> _baseline([recalibrate = false]) async {
+    Completer<double> dataCollected = Completer.sync();
+    
     if (_baselineVal != -1 && !recalibrate) {
       return _baselineVal;
     }
+
+    _calibrating = true;
 
     _log.fine("Calibrating sensor baseline...");
 
@@ -202,7 +263,13 @@ class Map {
     _log.fine("Sensor data collected: $sensorValues");
 
     _baselineVal = sensorValues.reduce((a, b) => a + b) / sensorValues.length;
-    return _baselineVal.clamp(0.1, 100.0);
+
+    () async {
+      dataCollected.complete(_baselineVal.clamp(0.1, 100.0));
+      _calibrating = false;
+    }();
+
+    return dataCollected.future;
   }
 
   Future<double> _certainty(int sensorValue) async {
@@ -263,6 +330,6 @@ class _Chunk {
       return;
     }
 
-    mapRegion[localCell.x][localCell.y] = certainty;
+    mapRegion[localCell.y][localCell.x] = certainty;
   }
 }

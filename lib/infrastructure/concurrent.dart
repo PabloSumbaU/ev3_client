@@ -1,22 +1,30 @@
 import "dart:async";
 import "dart:isolate";
 
+import "package:ev3_client/utils.dart";
 import "package:logging/logging.dart";
 
 final _log = Logger("Worker");
 
 class _IsolateArgs<T, R> {
-  _IsolateArgs(this.sendPort, this.runnable, this.portCallback, this.setWorkerState, this.getWorkerState);
+  _IsolateArgs(this.sendPort, this.runnable, this.portCallback, this.setWorkerState, this.getWorkerState, this.workerName);
 
   final SendPort sendPort;
-  final void Function(SendPort, ReceivePort, WorkerState Function()) runnable;
-  final R Function(T) portCallback;
+  final void Function(SendPort, ReceivePort, WorkerState Function(), Map<dynamic, dynamic>) runnable;
+  final Future<R> Function(T, Map<dynamic, dynamic>) portCallback;
   final void Function(WorkerState newState) setWorkerState;
   final WorkerState Function() getWorkerState;
+  final String workerName;
 }
 
 class Worker<T, R> {
-  Worker._(this._responses, this._commands, void Function(R)? portCallback, this._setWorkerState, this._getWorkerState) {
+  Worker._(
+    this._responses, 
+    this._commands, 
+    void Function(R)? portCallback, 
+    this._setWorkerState, 
+    this._getWorkerState, 
+  ) {
     _responses.listen((message) {
       final (id, result) = message as (int, R);
       final completer = _activeRequests.remove(id)!;
@@ -45,11 +53,11 @@ class Worker<T, R> {
   /// In order to gracefully terminate the worker isolate, verify the [state] of the worker inside the `runnable` function.
   /// If the state is `WorkerState.terminated`, the function should exit.
   static Future<Worker<T, R>> getInstance<T, R>(
-    void Function(SendPort sendPort, ReceivePort receivePort, WorkerState Function() workerState) runnable,
-    R Function(T data) workerListener,
-    [void Function(R result)? mainListener]
+    {required void Function(SendPort sendPort, ReceivePort receivePort, WorkerState Function() workerState, Map<dynamic, dynamic> store) runnable,
+    required Future<R> Function(T data, Map<dynamic, dynamic> store) workerListener,
+    void Function(R result)? mainListener, workerName = "WORKER"}
   ) async {
-    _log.fine("Instance requested");
+    _log.fine("Instance requested, types: $T, $R");
     
     //RawReceivePort so we can perform the initial handshake between isolates to exchange ports
     final initPort = RawReceivePort();
@@ -68,8 +76,8 @@ class Worker<T, R> {
 
     try {
       //Attempt to spawn the worker isolate
-      _log.finest("Attempting to spawn worker isolate");
-      Isolate.spawn(_runIsolate, _IsolateArgs<T, R>(initPort.sendPort, runnable, workerListener, setState, getState));
+      _log.fine("Attempting to spawn worker isolate");
+      Isolate.spawn(_runIsolate<T, R>, _IsolateArgs<T, R>(initPort.sendPort, runnable, workerListener, setState, getState, workerName));
       _log.fine("Isolate spawned, waiting for connection.");
     } on Object {
       //If failed, close the port and rethrow
@@ -79,9 +87,7 @@ class Worker<T, R> {
     }
 
     //Wait for the connection to complete and destructure the ports
-    //final (receivePort, sendPort) = await connection.future;
-    final receivePort = ReceivePort();
-    final sendPort = initPort.sendPort;
+    final (receivePort, sendPort) = await connection.future;
     _log.fine("Connection complete, returning instance.");
 
     //Return instance of Worker
@@ -96,8 +102,13 @@ class Worker<T, R> {
   }
 
   static void _runIsolate<T, R>(_IsolateArgs<T, R> args) {
+    initializeLogger(args.workerName);
     _log.fine("Starting worker isolate...");
     //This code runs on the worker isolate
+    
+    final store = {};
+
+    _log.fine("Store created");
 
     //Creates the ReceivePort for the WORKER isolate
     final receivePort = ReceivePort();
@@ -110,27 +121,31 @@ class Worker<T, R> {
     //Registers the worker isolate receiver callback:
     //When a message from the main isolate is received, attempts to run the callback, if an error occurs, sends it back to the
     //main isolate in the form of a RemoteError
-    receivePort.listen((message) {
+    receivePort.listen((message) async {
       if (message is _ShutdownCommand) {
         receivePort.close();
         if (message.forceShutdown) {
           Isolate.exit();
         }
         return;
+      } else if (message is _StoreCommand) {
+        store[message.key] = message.value;
+        return;
       }
 
       final (int id, T data) = message as (int, T);
 
       try {
-        final R result = args.portCallback(data);
+        final R result = await args.portCallback(data, store);
         sendPort.send((id, result));
       } catch (e) {
+        _log.severe(e.toString());
         sendPort.send((id, RemoteError(e.toString(), '')));
       }
     });
 
     //Runs the main process for the worker isolate
-    args.runnable(sendPort, receivePort, args.getWorkerState);
+    args.runnable(sendPort, receivePort, args.getWorkerState, store);
   }
 
   /// Sends a message from the [main] isolate to the [worker] isolate. Will wait for the response from the [worker] isolate.
@@ -151,6 +166,10 @@ class Worker<T, R> {
     return await completer.future;
   }
 
+  void store({dynamic key, dynamic value}) {
+    _commands.send(_StoreCommand(key, value));
+  }
+
   /// Terminates the worker isolate. If the optional argument `force` is true, the isolate will be forcefully terminated.
   void terminate([bool force = false]) {
     if (state != WorkerState.terminated) {
@@ -168,6 +187,13 @@ class _ShutdownCommand {
   _ShutdownCommand(this.forceShutdown);
   
   final bool forceShutdown;
+}
+
+class _StoreCommand {
+  _StoreCommand(this.key, this.value);
+
+  dynamic key;
+  dynamic value;
 }
 
 enum WorkerState {

@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'dart:ui' as ui;
 
 import 'package:ev3_client/infrastructure/concurrent.dart';
 import 'package:ev3_client/infrastructure/mapping.dart';
+import 'package:ev3_client/infrastructure/image.dart' as imaging;
+import 'package:image/image.dart' as img;
 import 'package:logging/logging.dart';
 
 final _log = Logger("Map Widget");
@@ -21,8 +23,8 @@ class MapWidget extends StatefulWidget {
 }
 
 class _MapWidgetState extends State<MapWidget> {
-  static Worker<Commands, Future<ui.Image>>? mapWorker;
-  ByteData? mapImageBytes;
+  static Worker<Commands, img.Image>? mapWorker;
+  Uint8List? mapImageBytes;
 
   @override
   void initState() {
@@ -32,7 +34,7 @@ class _MapWidgetState extends State<MapWidget> {
 
     initializeWorker();
 
-    Timer.periodic(const Duration(milliseconds: 500), (timer) {
+    Timer.periodic(const Duration(milliseconds: Map.timeBetweenUpdates), (timer) {
       updateMapImage();
     });
   }
@@ -45,10 +47,10 @@ class _MapWidgetState extends State<MapWidget> {
 
   void updateMapImage() async {
     if(mapWorker == null) return;
-    //DON'T QUESTION IT, OK?
-    ui.Image newMapImage = await await mapWorker!.send(Commands.render);
-    ByteData? newImageBytes = await newMapImage.toByteData(format: ui.ImageByteFormat.png);
     
+    img.Image image = await mapWorker!.send(Commands.render);
+
+    Uint8List newImageBytes = img.PngEncoder().encode(image);
     setState(() {
       mapImageBytes = newImageBytes;
     });
@@ -57,7 +59,21 @@ class _MapWidgetState extends State<MapWidget> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      child: mapImageBytes != null ? Image.memory(Uint8List.view(mapImageBytes!.buffer)) : const Placeholder(),
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).dividerColor),
+        borderRadius: const BorderRadius.all(Radius.circular(2.0))
+      ),
+      child: SizedBox(
+        width: Map.mapSize.toDouble(), 
+        height: Map.mapSize. toDouble(),
+        child: mapImageBytes != null ? Image.memory(mapImageBytes!, gaplessPlayback: true) : const CircularProgressIndicator(),
+      )
     );
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+    mapWorker?.terminate();
   }
 }
