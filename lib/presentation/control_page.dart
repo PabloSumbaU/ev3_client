@@ -69,6 +69,7 @@ class ControlPage extends StatelessWidget {
   }
 
   void _onDisconnectPressed(BuildContext context) {
+    MapWidget.terminate();
     disconnect();
     ScaffoldMessenger.of(context).showSnackBar(_disconnected);
     Navigator.pop(context);

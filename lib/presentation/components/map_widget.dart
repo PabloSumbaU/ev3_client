@@ -6,7 +6,6 @@ import 'package:flutter/material.dart';
 
 import 'package:ev3_client/infrastructure/concurrent.dart';
 import 'package:ev3_client/infrastructure/mapping.dart';
-import 'package:ev3_client/infrastructure/image.dart' as imaging;
 import 'package:image/image.dart' as img;
 import 'package:logging/logging.dart';
 
@@ -14,10 +13,13 @@ final _log = Logger("Map Widget");
 
 class MapWidget extends StatefulWidget {
   const MapWidget({super.key});
+
+  static void terminate() {
+    _MapWidgetState.mapWorker?.terminate();
+  }
   
   @override
   State<StatefulWidget> createState() {
-    _log.finest("Map widget created");
     return _MapWidgetState();
   }
 }

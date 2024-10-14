@@ -79,8 +79,15 @@ class Map {
           getPosition: () {
             List<String> data = store["position"].split(';');
             var values = data.map((e) => double.parse(e)).toList();
+
+            //Dealing with TCP shenanigans, return previous position if we don't have a new one (cause it's invalid)
+            if (values.length == 3) {
+              store['previous_pos'] = values;
+              return (values[0], values[1], values[2]);
+            } else {
+              return store['previous_pos'];
+            }
             
-            return (values[0], values[1], values[2]);
           },
         );
 
@@ -181,7 +188,7 @@ class Map {
 
     final (x, y, angle) = getPosition();
     //FIXME: App became unresponsive and robot got stuck.
-    _log.finest("Position: $x, $y, $angle");
+    //_log.finest("Position: $x, $y, $angle");
 
     Point<double> position = Point(x, y);
     position = Point(position.x + 15, position.y + 15);
@@ -206,6 +213,8 @@ class Map {
 
     Point<int> quadrant = getQuadrant(affectedCell);
     _Chunk? affectedChunk = _map[quadrant];
+
+    _log.finest("Quadrant: $quadrant, affected cell: $affectedCell, certainty: $certainty");
 
     if (affectedChunk == null) {
       affectedChunk = _Chunk(quadrant);
