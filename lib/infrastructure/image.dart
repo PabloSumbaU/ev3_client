@@ -74,7 +74,7 @@ img.Image fromDoubleList(List<double> list, int width, int height, ui.Color fore
 
     final foregroundPixel = ui.Color.fromARGB((alpha * 255).truncate(), foreground.red, foreground.green, foreground.blue);
 
-    if (background != null) {
+    if (background != null && background.alpha > 0) {
       pixels.add(ui.Color.alphaBlend(foregroundPixel, background));
     } else {
       pixels.add(foregroundPixel);

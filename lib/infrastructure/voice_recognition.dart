@@ -5,6 +5,8 @@ import 'package:speech_to_text/speech_to_text.dart';
 
 Logger _log = Logger("Voice recognition");
 
+// TODO: Reenable voice recognition on reconnection
+
 class VoiceRecognition {
   static SpeechToText? _stt;
   static bool _speechEnabled = false;

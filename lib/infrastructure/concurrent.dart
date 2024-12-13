@@ -2,12 +2,13 @@ import "dart:async";
 import "dart:isolate";
 
 import "package:ev3_client/utils.dart";
+import "package:flutter/services.dart";
 import "package:logging/logging.dart";
 
 final _log = Logger("Worker");
 
 class _IsolateArgs<T, R> {
-  _IsolateArgs(this.sendPort, this.runnable, this.portCallback, this.setWorkerState, this.getWorkerState, this.workerName);
+  _IsolateArgs(this.sendPort, this.runnable, this.portCallback, this.setWorkerState, this.getWorkerState, this.workerName, this.token);
 
   final SendPort sendPort;
   final void Function(SendPort, ReceivePort, WorkerState Function(), Map<dynamic, dynamic>) runnable;
@@ -15,6 +16,7 @@ class _IsolateArgs<T, R> {
   final void Function(WorkerState newState) setWorkerState;
   final WorkerState Function() getWorkerState;
   final String workerName;
+  final RootIsolateToken? token;
 }
 
 class Worker<T, R> {
@@ -55,7 +57,7 @@ class Worker<T, R> {
   static Future<Worker<T, R>> getInstance<T, R>(
     {required void Function(SendPort sendPort, ReceivePort receivePort, WorkerState Function() workerState, Map<dynamic, dynamic> store) runnable,
     required Future<R> Function(T data, Map<dynamic, dynamic> store) workerListener,
-    void Function(R result)? mainListener, workerName = "WORKER"}
+    void Function(R result)? mainListener, String workerName = "WORKER"}
   ) async {
     _log.fine("Instance requested, types: $T, $R");
     
@@ -74,10 +76,16 @@ class Worker<T, R> {
 
     final (getState, setState) = workerStates();
 
+    //Gets the RootIsolate token to be able to send platform messages from Worker isolates.
+    //WARNING: Will only work on Flutter due to a dependency on dart:ui!
+    final token = RootIsolateToken.instance;
+
     try {
       //Attempt to spawn the worker isolate
       _log.fine("Attempting to spawn worker isolate");
-      Isolate.spawn(_runIsolate<T, R>, _IsolateArgs<T, R>(initPort.sendPort, runnable, workerListener, setState, getState, workerName));
+      Isolate.spawn(
+        _runIsolate<T, R>, _IsolateArgs<T, R>(initPort.sendPort, runnable, workerListener, setState, getState, workerName, token)
+      );
       _log.fine("Isolate spawned, waiting for connection.");
     } on Object {
       //If failed, close the port and rethrow
@@ -109,6 +117,12 @@ class Worker<T, R> {
     final store = {};
 
     _log.fine("Store created");
+
+    if (args.token != null) {
+      BackgroundIsolateBinaryMessenger.ensureInitialized(args.token!);
+    } else {
+      _log.warning("RootIsolateToken is null, worker isolate unable to send platform messages.");
+    }
 
     //Creates the ReceivePort for the WORKER isolate
     final receivePort = ReceivePort();

@@ -51,6 +51,14 @@ void initializeLogger([worker = "MAIN"]) {
       case Level.WARNING:
         color = "\x1B[33m";
         break;
+
+      case Level.INFO:
+        color = ansiColor(50, 50, 250);
+        break;
+      
+      case Level.CONFIG:
+        color = ansiColor(141, 97, 250);
+        break;
       default:
         color = "";
     }
@@ -58,4 +66,8 @@ void initializeLogger([worker = "MAIN"]) {
     //ignore: avoid_print
     print('$workerColor[WORKER/$worker]$nameColor[${record.loggerName}] $color${record.level.name}: ${record.time}: ${record.message}$reset');
   });
+}
+
+String ansiColor(int r, int g, int b) {
+  return "\x1B[38;2;$r;$g;${b}m";
 }

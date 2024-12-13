@@ -11,6 +11,8 @@ import 'package:logging/logging.dart';
 
 final _log = Logger("Map Widget");
 
+// TODO: Restart mapping on reconnection
+
 class MapWidget extends StatefulWidget {
   const MapWidget({super.key});
 
@@ -36,7 +38,7 @@ class _MapWidgetState extends State<MapWidget> {
 
     initializeWorker();
 
-    Timer.periodic(const Duration(milliseconds: Map.timeBetweenUpdates), (timer) {
+    Timer.periodic(const Duration(milliseconds: TerrainMap.timeBetweenUpdates), (timer) {
       updateMapImage();
     });
   }
@@ -44,7 +46,7 @@ class _MapWidgetState extends State<MapWidget> {
   void initializeWorker() async {
     if(mapWorker != null) return;
     _log.finest("Worker not instantiated, creating instance...");
-    mapWorker = await Map.startConcurrent();
+    mapWorker = await TerrainMap.startConcurrent();
   }
 
   void updateMapImage() async {
@@ -66,8 +68,8 @@ class _MapWidgetState extends State<MapWidget> {
         borderRadius: const BorderRadius.all(Radius.circular(2.0))
       ),
       child: SizedBox(
-        width: Map.mapSize.toDouble(), 
-        height: Map.mapSize. toDouble(),
+        width: TerrainMap.mapSize.toDouble(), 
+        height: TerrainMap.mapSize. toDouble(),
         child: mapImageBytes != null ? Image.memory(mapImageBytes!, gaplessPlayback: true) : const CircularProgressIndicator(),
       )
     );

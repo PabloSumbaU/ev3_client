@@ -2,6 +2,8 @@ import 'dart:collection';
 import 'dart:math';
 import 'dart:async';
 import 'dart:ui';
+import 'package:ev3_client/infrastructure/storage/serializable.dart';
+import 'package:ev3_client/infrastructure/storage/utils.dart';
 import 'package:ev3_client/utils.dart';
 import 'package:logging/logging.dart';
 import 'package:image/image.dart' as img;
@@ -24,10 +26,17 @@ enum Commands {
   render, clear
 }
 
-class Map {
+Completer<void> mapReady = Completer.sync();
+
+class TerrainMap {
   // Robot is around 30 cm in length (~27 to be more precise)
-  Map({required this.getSensorValue, required this.getPosition}): _map = HashMap(), currentQuadrant = const Point(0, 0) {
-    _createChunks(currentQuadrant);
+  TerrainMap({required this.getSensorValue, required this.getPosition}): _map = HashMap(), currentQuadrant = const Point(0, 0) {
+    () async {
+      _log.info("Just testing info colors. :)");
+      _log.config("Just testing config colors. :)");
+      await _ensureChunks(currentQuadrant);
+      mapReady.complete();
+    }();
   }
 
   final HashMap<Point<int>, _Chunk> _map;
@@ -36,7 +45,8 @@ class Map {
   (double x, double y, double angle) Function() getPosition;
   static const renderDistance = 1;
   static const mapSize = _Chunk.chunkSize * (2 * renderDistance + 1);
-  static const timeBetweenUpdates = 20;
+  static const timeBetweenUpdates = 20; //Time between map updates in milliseconds
+  static const timeBetweenSaves = 30000; //Time between map saves in milliseconds
 
   static Future<Worker<Commands, img.Image>> startConcurrent() async {
     var worker = await Worker.getInstance<Commands, img.Image>(
@@ -60,7 +70,7 @@ class Map {
 
         await dataCollected.future;
 
-        final map = Map(
+        final map = TerrainMap(
           getSensorValue: () {
             List<String> data = store["sensorValue"].split(';');
             for (String string in data) {
@@ -77,6 +87,13 @@ class Map {
           },
 
           getPosition: () {
+            if (store["position"] == null) {
+              //FIXME: Race condition here. It's possible to reach here before the position is initialized.
+              // Occurences: 1 [VERY RARE]
+              _log.warning("Position is null, probably uninitialized");
+              return (0.0, 0.0, 0.0);
+            }
+
             List<String> data = store["position"].split(';');
             var values = data.map((e) => double.parse(e)).toList();
 
@@ -91,6 +108,8 @@ class Map {
           },
         );
 
+        await mapReady.future; //Ensure the initial chunks are loaded before starting
+
         store['map'] = map;
 
         Timer.periodic(const Duration(milliseconds: timeBetweenUpdates), 
@@ -101,11 +120,23 @@ class Map {
             timer.cancel();
           }
         });
+
+        Timer.periodic(const Duration(milliseconds: timeBetweenSaves),
+        (timer) {
+          map.save();
+          map._unloadChunks();
+
+          _log.finer("Map saved");
+
+          if(workerState() == WorkerState.terminated) {
+            timer.cancel();
+          }
+        });
       },
       workerListener: (Commands data, store) async {
         const foreground = Color.fromARGB(255, 177, 104, 231);
-        const background = Color.fromARGB(255, 0, 0, 0);
-        final map = store['map'] as Map?;
+        const background = Color.fromARGB(0, 0, 0, 0);
+        final map = store['map'] as TerrainMap?;
 
         if (map == null) {
           return imaging.clearImage(mapSize, mapSize);
@@ -113,7 +144,7 @@ class Map {
         
         switch (data) {
           case Commands.render:
-            return imaging.fromDoubleList(map.getCurrentMapData(), mapSize, mapSize, foreground, null);
+            return imaging.fromDoubleList(map.getCurrentMapData(), mapSize, mapSize, foreground, background);
 
           case Commands.clear:
             return imaging.clearImage(mapSize, mapSize);
@@ -135,17 +166,55 @@ class Map {
 
   ///This function ensures the required chunk and the ones surrounding it in a radius around the center point [quadrant]
   ///are created. The radius is the render distance of the map. The specific amount of chunks created is (`renderDistance` * 2 + 1)².
-  _Chunk _createChunks(Point<int> quadrant) {
-    _Chunk center = _map.putIfAbsent(quadrant, () => _Chunk(quadrant));
-
+  Future<void> _ensureChunks(Point<int> quadrant) async {
     for (int x = -renderDistance; x <= renderDistance; x++) {
       for (int y = -renderDistance; y <= renderDistance; y++) {
         Point<int> newQuadrant = Point(quadrant.x + x, quadrant.y + y);
-        _map.putIfAbsent(newQuadrant, () => _Chunk(newQuadrant));
+        await _loadChunkOrCreate(newQuadrant);
+      }
+    }
+  }
+
+  Future<_Chunk> _loadChunkOrCreate(Point<int> quadrant) async {
+    _Chunk newChunk;
+
+    if (await _Chunk.isSaved(quadrant)) {
+      newChunk = await _Chunk.load(quadrant);
+      _log.finest("Chunk at $quadrant loaded");
+    } else {
+      newChunk = _Chunk(quadrant);
+      _log.finest("Chunk file not found, created new chunk at $quadrant");
+    }
+
+    _map[quadrant] = newChunk;
+
+    return newChunk;
+  }
+
+  void _unloadChunks() {
+    for (_Chunk chunk in _outOfRange(currentQuadrant)) {
+      _map.remove(chunk.quadrant);
+      _log.finest("Unloaded chunk at ${chunk.quadrant}");
+    }
+  }
+
+  List<_Chunk> _outOfRange(Point<int> position) {
+    List<_Chunk> chunks = [];
+    Set<Point<int>> inRange = {};
+
+    for (int x = -renderDistance; x <= renderDistance; x++) {
+      for (int y = -renderDistance; y <= renderDistance; y++) {
+        inRange.add(Point(position.x + x, position.y + y));
       }
     }
 
-    return center;
+    for (_Chunk chunk in _map.values) {
+      if (!inRange.contains(chunk.quadrant)) {
+        chunks.add(chunk);
+      }
+    }
+
+    return chunks;
   }
 
   ///Creates a list representing the data of the map at and around the center point [quadrant] with the radius being the render
@@ -188,6 +257,8 @@ class Map {
 
     final (x, y, angle) = getPosition();
     //FIXME: App became unresponsive and robot got stuck.
+    // Occurences: 1 [VERY RARE]
+    //↑ Hasn't happened again, can't reproduce for now.
     //_log.finest("Position: $x, $y, $angle");
 
     Point<double> position = Point(x, y);
@@ -214,25 +285,29 @@ class Map {
     Point<int> quadrant = getQuadrant(affectedCell);
     _Chunk? affectedChunk = _map[quadrant];
 
-    _log.finest("Quadrant: $quadrant, affected cell: $affectedCell, certainty: $certainty");
+    //_log.finest("Quadrant: $quadrant, affected cell: $affectedCell, certainty: $certainty");
 
-    if (affectedChunk == null) {
-      affectedChunk = _Chunk(quadrant);
-      _map[quadrant] = affectedChunk;
-    }
+    affectedChunk ??= await _loadChunkOrCreate(quadrant);
 
     affectedChunk.setCell(affectedCell, certainty);
   }
 
+  void save() {
+    for (var chunk in _map.values) {
+      chunk.save();
+    }
+    //TODO: We need a way of deleting the map files too!
+  }
+
   Future<List<int>> _getSensorValues([Duration dur = const Duration(seconds: 3)]) async {
-    _log.fine("Collecting sensor values with duration $dur");
+    _log.finer("Collecting sensor values with duration $dur");
     Completer<List<int>> dataCollected = Completer.sync();
     List<int> sensorValues = [];
     bool stop = false;
 
     Timer(dur, () {
       stop = true;
-      _log.fine("Time's up!");
+      _log.finer("Time's up!");
 
       dataCollected.complete(sensorValues);
     });
@@ -269,14 +344,18 @@ class Map {
 
     List<int> sensorValues = await _getSensorValues();
 
-    _log.fine("Sensor data collected: $sensorValues");
+    _log.finest("Sensor data collected: $sensorValues");
 
     _baselineVal = sensorValues.reduce((a, b) => a + b) / sensorValues.length;
 
     () async {
       dataCollected.complete(_baselineVal.clamp(0.1, 100.0));
       _calibrating = false;
+      _log.fine("Calibration done!");
     }();
+
+    //TODO: Double check this, I'm pretty sure it'd work if I await the completer future instead of the anonymous async function
+    // shenanigans.
 
     return dataCollected.future;
   }
@@ -289,15 +368,11 @@ class Map {
   }
 }
 
-class _Chunk {
+class _Chunk extends Serializable<_Chunk> {
   _Chunk(this.quadrant): 
     coordBound = Point<int>(quadrant.x * cellSize * chunkSize, quadrant.y * cellSize * chunkSize),
-    cellBound = Point<int>(quadrant.x * chunkSize, quadrant.y * chunkSize);
-
-  static const cellSize = 30; //Cell size is 30 cm
-  static const chunkSize = 30;  //Chunk size is 30 cells
-  //Generate immutable matrix of chunkSize x chunkSize cells
-  final List<List<double>> mapRegion = 
+    cellBound = Point<int>(quadrant.x * chunkSize, quadrant.y * chunkSize),
+    mapRegion = 
     List<List<double>>.generate(
       chunkSize, 
       (index) => 
@@ -308,6 +383,16 @@ class _Chunk {
         ),
       growable: false
     );
+
+  _Chunk._fromJson(this.quadrant, this.mapRegion):
+    coordBound = Point<int>(quadrant.x * cellSize * chunkSize, quadrant.y * cellSize * chunkSize),
+    cellBound = Point<int>(quadrant.x * chunkSize, quadrant.y * chunkSize);
+
+  static const cellSize = 30; //Cell size is 30 cm
+  static const chunkSize = 30;  //Chunk size is 30 cells
+  //Generate immutable matrix of chunkSize x chunkSize cells
+  final List<List<double>> mapRegion;
+  
   final Point<int> quadrant;  //Quadrant of the chunk
   final Point<int> coordBound;  //Global coordinate of the top left corner of the chunk
   final Point<int> cellBound; //Global cell of the top left corner of the chunk
@@ -341,4 +426,31 @@ class _Chunk {
 
     mapRegion[localCell.y][localCell.x] = certainty;
   }
+
+  @override
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      "quadrant_x": quadrant.x,
+      "quadrant_y": quadrant.y,
+      "map_region": mapRegion
+    };
+  }
+
+  static Future<_Chunk> load(Point<int> quadrant) async {
+    final json = await Serializable.loadData(quadrantFilename(quadrant));
+
+    return _Chunk._fromJson(
+      Point<int>(json["quadrant_x"] as int, json["quadrant_y"] as int), 
+      castMatrix<double>(json["map_region"])
+    );
+  }
+
+  static String quadrantFilename(Point<int> quadrant) => "chunk_${quadrant.x}_${quadrant.y}.json";
+
+  @override
+  String filename() {
+    return quadrantFilename(quadrant);
+  }
+
+  static Future<bool> isSaved(Point<int> quadrant) => Serializable.fileExists(quadrantFilename(quadrant));
 }

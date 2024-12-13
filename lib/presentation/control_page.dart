@@ -205,8 +205,11 @@ class Controls extends HookWidget {
       (result) => getInstructionSet(result).then(
         (message) {
           if (message == null) {
-            ScaffoldMessenger.of(context).showSnackBar(_invalidVCommand);
+            context.mounted ?
+            ScaffoldMessenger.of(context).showSnackBar(_invalidVCommand) :
+            _log.severe("Context not mounted!");
           } else {
+            _log.finest("Instructions: $message");
             send("text:$message");
           }
 
@@ -304,7 +307,6 @@ class Controls extends HookWidget {
                     gradientColors: [
                       Theme.of(context).primaryColor, 
                       Theme.of(context).highlightColor,
-                      //TODO: Check the colors
                     ],
                   ),
                 ),
