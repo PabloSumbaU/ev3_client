@@ -15,12 +15,14 @@ The application depends on a few external factors:
 4. Gemini LLM (for voice commands).
 5. Internet availability (to reach Gemini).
 
+**Update:** Gemini no longer provides a generous free tier on their API like before. Depending on the model, you'll likely be limited to 10-20 requests per day.
+
 ### Caveats
 - The app's dependency on the robot running specific software makes it not very accessible for the average user, nor easily portable to similar devices (as in, other robots, even within the Mindstorms product line). Although specific instructions may be provided, it'd still prove a tedious task to set everything up for the first time, and it also requires a MicroSD card (for running ev3dev) which might not be immediately available.
 
 - Since the server is specifically designed for this particular configuration of the robot, it may not work properly with different (physical) builds of the LEGO robot. Sensor info should be able to be read despite the configuration, but currently it's not used for any purpose.
 
-- While Gemini is the easiest to use LLM to normalize the instructions into something the robot can read (due to free usage and being hosted by Google), it introduces another set of issues, namely the need for an API key and the limitations of the free tier. Currently a personal API key is being used.
+- While Gemini is the easiest to use LLM to normalize the instructions into something the robot can read (due to free usage and being hosted by Google), it introduces another set of issues, namely the need for an API key and the limitations of the free tier. Currently a personal API key is being used. Consider setting up a proxy server to avoid exposing the key.
 
 ## Robot communication
 The server listens to instructions sent from the app via TCP sockets and execute them in the robot. Similarly, all relevant data is sent back to the app (sensor/odometry data).Given the protocol, it is possible for some instructions to be concatenated when sent while sending several in quick succession (e.g. Joystick movement), but given the nature of the instructions, this is not an issue, as we can safely ignore older movements.
