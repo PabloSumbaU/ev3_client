@@ -30,6 +30,7 @@ class _VoicePanelState extends State<VoicePanel> with SingleTickerProviderStateM
   String _message = "Toca el micrófono y da una orden";
   InterpretResult? _result;
   Timer? _resetTimer;
+  Timer? _watchdog;
 
   @override
   void initState() {
@@ -40,6 +41,7 @@ class _VoicePanelState extends State<VoicePanel> with SingleTickerProviderStateM
   @override
   void dispose() {
     _resetTimer?.cancel();
+    _watchdog?.cancel();
     _pulse.dispose();
     _voice.cancel();
     super.dispose();
@@ -55,6 +57,18 @@ class _VoicePanelState extends State<VoicePanel> with SingleTickerProviderStateM
       _phase = phase;
       if (message != null) _message = message;
     });
+    // Vigilante: el botón nunca se queda trabado. Si el teléfono no avisa que
+    // terminó de escuchar (o de entender), se cierra a la fuerza.
+    _watchdog?.cancel();
+    if (phase == _Phase.listening) {
+      _watchdog = Timer(const Duration(seconds: 17), () {
+        if (_phase == _Phase.listening) _voice.forceFinish();
+      });
+    } else if (phase == _Phase.thinking) {
+      _watchdog = Timer(const Duration(seconds: 12), () {
+        if (_phase == _Phase.thinking) _set(_Phase.error, message: "Tardó demasiado. Intenta de nuevo.");
+      });
+    }
     if (phase == _Phase.listening) {
       _pulse.repeat();
     } else {
@@ -69,6 +83,10 @@ class _VoicePanelState extends State<VoicePanel> with SingleTickerProviderStateM
       case _Phase.listening:
         _vibrate();
         await _voice.stop();
+        // si en 2 s no llega el resultado, cerrar igual
+        Timer(const Duration(seconds: 2), () {
+          if (_phase == _Phase.listening) _voice.forceFinish();
+        });
         return;
       case _Phase.thinking:
         return;

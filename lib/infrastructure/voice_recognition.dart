@@ -105,6 +105,16 @@ class VoiceService {
     _lastWords = "";
     _finished = false;
 
+    try {
+      await _listenInternal();
+    } catch (e) {
+      _log.severe("Error al iniciar la escucha: $e");
+      _finished = true;
+      onError("No se pudo iniciar el micrófono. Intenta de nuevo.");
+    }
+  }
+
+  Future<void> _listenInternal() async {
     await _stt.listen(
       onResult: (result) {
         _lastWords = result.recognizedWords;
@@ -131,6 +141,14 @@ class VoiceService {
     await _stt.stop();
     // Algunos teléfonos no envían el resultado final tras stop(): lo forzamos.
     Future.delayed(const Duration(milliseconds: 600), _finish);
+  }
+
+  /// Cierra la escucha a la fuerza (si el teléfono nunca avisa que terminó).
+  Future<void> forceFinish() async {
+    try {
+      await _stt.stop();
+    } catch (_) {}
+    _finish();
   }
 
   Future<void> cancel() async {

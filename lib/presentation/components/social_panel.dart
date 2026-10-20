@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:vibration/vibration.dart';
 
@@ -218,8 +220,15 @@ class _SpeakTabState extends State<_SpeakTab> {
     final voice = VoiceService.instance;
     if (_listening) {
       await voice.stop();
+      Timer(const Duration(seconds: 2), () {
+        if (_listening) voice.forceFinish();
+      });
       return;
     }
+    // vigilante: nunca quedarse escuchando para siempre
+    Timer(const Duration(seconds: 17), () {
+      if (_listening) voice.forceFinish();
+    });
     _tap();
     setState(() {
       _listening = true;
