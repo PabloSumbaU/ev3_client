@@ -1,384 +1,358 @@
-import 'dart:async';
 
-import 'package:ev3_client/presentation/components/toggle_progressive_button.dart';
-import 'package:ev3_client/presentation/custom_icons.dart';
-import 'package:ev3_client/utils.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_joystick/flutter_joystick.dart';
 import 'package:vibration/vibration.dart';
-import 'package:logging/logging.dart';
 
-import './components/themed_toggle_button.dart';
-import './components/themed_cycling_button.dart';
-import './components/sensor_widget.dart';
-import './components/custom_stick.dart';
-import './components/progressive_button.dart';
-import './components/map_widget.dart';
-
+import '../infrastructure/gemini.dart';
 import '../infrastructure/socket_connection.dart';
 import '../infrastructure/voice_recognition.dart';
+import '../utils.dart';
+import 'components/custom_stick.dart';
+import 'components/map_widget.dart';
+import 'components/social_panel.dart';
+import 'components/voice_panel.dart';
+import 'robot_state.dart';
 
-final Logger _log = Logger("Control");
 void hapticFeedback() async {
-  if (await Vibration.hasVibrator() ?? false) {
-    Vibration.vibrate(duration: 50); // 50ms para un feedback táctil ligero
+  if (await Vibration.hasVibrator()) {
+    Vibration.vibrate(duration: 50);
   }
 }
 
-class ControlPage extends StatelessWidget {
+enum ControlType { joystick, area, voice }
+
+/// Pantalla de control (horizontal):
+///  izquierda: movimiento (joystick / área / voz) + garra + PARAR
+///  derecha:   estado del robot + acciones sociales + hacer hablar al robot
+class ControlPage extends StatefulWidget {
   const ControlPage({super.key});
 
-  final SnackBar _disconnected = const SnackBar(content: Text("Desconectado"));
-
   @override
-  Widget build(BuildContext context) {
-    SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
+  State<ControlPage> createState() => _ControlPageState();
+}
 
-    return Scaffold(
-      body: const Center(
-        child: Padding(
-          padding: EdgeInsets.fromLTRB(8, 15, 8, 8),
-          child: Stack(
-            children: [
-              Column(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  SensorBar(),
-                  Controls(),
-                ],
-              ),
-              Positioned(
-                top: 0,
-                right: 0,
-                child: MapWidget(),
-              )
-            ],
-          ),
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _onDisconnectPressed(context), 
-        child: const Icon(
-          Icons.link_off,
-        ),
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.miniStartTop,
-    );
+class _ControlPageState extends State<ControlPage> {
+  ControlType _control = ControlType.joystick;
+  bool _leaving = false;
+
+  void _onSensor(String message) {
+    RobotState.status.value = RobotStatus.parse(message);
   }
 
-  void _onDisconnectPressed(BuildContext context) {
+  @override
+  void initState() {
+    super.initState();
+    SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]);
+    RobotState.reset();
+    addSensorCallback(_onSensor);
+    connectionLost.addListener(_onConnectionLost);
+  }
+
+  @override
+  void dispose() {
+    removeSensorCallback(_onSensor);
+    connectionLost.removeListener(_onConnectionLost);
+    VoiceService.instance.cancel();
+    super.dispose();
+  }
+
+  void _onConnectionLost() {
+    if (!connectionLost.value || _leaving || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("Se perdió la conexión con el robot")),
+    );
+    _leave();
+  }
+
+  void _leave() {
+    if (_leaving) return;
+    _leaving = true;
     MapWidget.terminate();
     disconnect();
-    ScaffoldMessenger.of(context).showSnackBar(_disconnected);
-    Navigator.pop(context);
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  }
-}
-
-class SensorBar extends HookWidget {
-  const SensorBar({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final sensorData = useState("-");
-    
-    useEffect(() {
-      addSensorCallback((message) {sensorData.value = message;});
-      return;
-    }, []);
-
-    List<String> sensorsData = sensorData.value.split(";");
-    List<Widget> sensorWidgets = [];
-
-    for (String sensor in sensorsData) {
-      final data = sensor.split(":");
-
-      switch (data[0]) {
-        case "ir":
-          sensorWidgets.add(
-            SensorWidget(icon: const Icon(Icons.track_changes), label: const Text("Proximidad"), data: data[1])
-          );
-          break;
-        
-        case "cl":
-          sensorWidgets.add(
-            SensorWidget(icon: const Icon(Icons.color_lens), label: const Text("Color"), data: data[1])
-          );
-        break;
-
-        case "gy":
-          sensorWidgets.add(
-            SensorWidget(icon: const Icon(Icons.threesixty), label: const Text("Giroscopio"), data: data[1])
-          );
-        break;
-
-        case "tc":
-          sensorWidgets.add(
-            SensorWidget(icon: const Icon(Icons.touch_app), label: const Text("Táctil"), data: data[1])
-          );
-        break;
-
-        default:
-          _log.warning("Unhandled or invalid sensor data: $sensor");
-      }
-    }
-
-    if (sensorWidgets.isNotEmpty) {
-      return Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: sensorWidgets,
-      );
-    } else {
-      return const SensorWidget(icon: Icon(Icons.sensors_off), label: Text("No disponible"), data: "");
-    }
-  }
-}
-
-enum ControlType {
-  joystick, area, voice
-}
-
-ControlType _currentControl = ControlType.joystick;
-bool listenerAdded = false;
-
-class ControlTypeButton extends StatelessWidget {
-  const ControlTypeButton({
-    super.key,
-    required this.updateHandler,
-  });
-
-  final void Function(ControlType) updateHandler;
-
-  @override
-  Widget build(BuildContext context) {
-    return ThemedCyclingButton<ControlType>(
-      initialState: ControlType.joystick,
-      updateHandler: updateHandler,
-      states: ControlType.values,
-      icons: const [CustomIcons.joystick, Icons.touch_app, Icons.mic],
-      iconSize: 35,
-    );
-  }
-}
-
-VoiceRecognition? vRecog;
-const SnackBar _voiceUnavailable = SnackBar(content: Text("El reconocimiento de voz no está disponible"));
-
-Future<bool> instantiateVoiceRecognition(BuildContext context) async {
-    _log.fine("Initializing voice recognition...");
-    vRecog = await VoiceRecognition.getInstance(
-      () => ScaffoldMessenger.of(context).showSnackBar(_voiceUnavailable)
-    );
-    return vRecog != null;
-  }
-
-class Controls extends HookWidget {
-  const Controls({super.key});
-
-  final SnackBar _invalidVCommand = const SnackBar(content: Text("El comando no se reconoció o fue inválido"));
-
-  void _joystickListener(StickDragDetails details) {
-    still = details.x == 0 && details.y == 0;
-
-    var joyX = normalizeStringLen(details.x, 5);
-    var joyY = normalizeStringLen(details.y, 5);
-
-    send("stick:$joyX;$joyY;${_useClaw ? 1 : 0}");
-  }
-
-  Timer ensureReenable(void Function() reenable) {
-    return Timer.periodic(const Duration(seconds: 3), (timer) {
-      if (!vRecog!.isListening()) {
-        reenable();
-        timer.cancel();
-      }
-    });
-  }
-
-  Future<void> startVoice(BuildContext context, void Function() reenable) async {
-    hapticFeedback();
-    Timer timer = ensureReenable(reenable);
-    
-    await vRecog!.listen(
-      (result) => getInstructionSet(result).then(
-        (message) {
-          if (message == null) {
-            context.mounted ?
-            ScaffoldMessenger.of(context).showSnackBar(_invalidVCommand) :
-            _log.severe("Context not mounted!");
-          } else {
-            _log.finest("Instructions: $message");
-            send("text:$message");
-          }
-
-          timer.cancel();
-          reenable();
-        }
-      )
-    );
-  }
-
-  Future<void> endVoice({required reenable}) async {
-    await vRecog!.stop();
-    hapticFeedback();
+    if (mounted) Navigator.pop(context);
   }
 
   @override
   Widget build(BuildContext context) {
-    final controlType = useState(_currentControl);
-    final voiceInitialized = useState(false);
-
-    if (!listenerAdded) {
-      controlType.addListener(() {
-        if (controlType.value == ControlType.voice && vRecog == null) {
-          instantiateVoiceRecognition(context).then((value) { 
-            voiceInitialized.value = value;
-            _log.fine("Voice recognition initialized: ${voiceInitialized.value}");
-          });
-        }
-      });
-
-      listenerAdded = true;
-    }
-    
-    return Column(
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Align(
-              alignment: Alignment.centerLeft,
-              child: ControlTypeButton(updateHandler: (ControlType newState) {
-                _currentControl = newState;
-                controlType.value = _currentControl;
-              }),
-            ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: ToggleProgressiveButton(
-                initToggled: voiceInitialized.value,
-                duration: 8, 
-                toggleAction: () {
-                  if (vRecog == null) {
-                    return instantiateVoiceRecognition(context).then(
-                      (value) {
-                        voiceInitialized.value = value;
-                        return value;
-                      });
-                  } else {
-                    return Future(() => true);
-                  }
-                },
-                downAction: ({required reenable}) {
-                  // Sometimes hangs showing the progress indicator despite being reenabled, not sure why
-                  hapticFeedback();
-                  Timer timer = ensureReenable(reenable);
-                  
-                  return vRecog!.listen((result) {
-                    sendSpeech(result);
-                    timer.cancel();
-                    reenable();
-                  });
-                }, 
-                upAction: ({required reenable}) {
-                  hapticFeedback();
-                  return vRecog!.stop();
-                }, 
-                initEnabled: true,
-                iconData: Icons.speaker,
-                iconSize: 35,
-              ),
-            )
-          ],
-        ),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            switch(_currentControl) {
-              ControlType.joystick => 
-                Joystick(
-                  listener: _joystickListener,
-                  onStickDragEnd: () => send("stick:*;${_useClaw ? 1 : 0}"),
-                  base: JoystickBase(color: Theme.of(context).primaryColor.withValues(alpha: 0.75),),
-                  stick: JoystickCustomStick(
-                    shadowColor: Theme.of(context).primaryColor.withValues(alpha: 0.5),
-                    gradientColors: [
-                      Theme.of(context).primaryColor, 
-                      Theme.of(context).highlightColor,
-                    ],
-                  ),
-                ),
-
-              ControlType.area =>
-                SizedBox(
-                  width: 300,
-                  height: 200,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).primaryColor.withValues(alpha: 0.75),
-                      borderRadius: const BorderRadius.all(Radius.circular(15)),
-                    ),
-                    child: SafeArea(
-                      child: JoystickArea(
-                        listener: _joystickListener,
-                        onStickDragEnd: () => send("stick:*;${_useClaw ? 1 : 0}"),
-                        base: const JoystickSquareBase(
-                          color: Color.fromARGB(0, 0, 0, 0),
-                          drawArrows: false,
-                        ),
-                        stick: JoystickCustomStick(
-                          shadowColor: const Color.fromARGB(0, 0, 0, 0),
-                          gradientColors: const [Color.fromARGB(0, 0, 0, 0), Color.fromARGB(0, 0, 0, 0)],
-                        ),
+    final scheme = Theme.of(context).colorScheme;
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _leave();
+      },
+      child: Scaffold(
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // ------------------------------------------------ movimiento
+                Expanded(
+                  flex: 5,
+                  child: Card(
+                    margin: EdgeInsets.zero,
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Column(
+                        children: [
+                          SegmentedButton<ControlType>(
+                            showSelectedIcon: false,
+                            style: const ButtonStyle(visualDensity: VisualDensity.compact),
+                            segments: const [
+                              ButtonSegment(value: ControlType.joystick, icon: Icon(Icons.gamepad_rounded), label: Text("Joystick")),
+                              ButtonSegment(value: ControlType.area, icon: Icon(Icons.touch_app_rounded), label: Text("Área")),
+                              ButtonSegment(value: ControlType.voice, icon: Icon(Icons.mic_rounded), label: Text("Voz")),
+                            ],
+                            selected: {_control},
+                            onSelectionChanged: (s) {
+                              hapticFeedback();
+                              send("stick:*;${RobotState.clawClosed.value ? 1 : 0}");
+                              setState(() => _control = s.first);
+                            },
+                          ),
+                          Expanded(child: Center(child: _buildControl(context))),
+                          Row(
+                            children: [
+                              const Expanded(child: _ClawButton()),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: FilledButton.icon(
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: scheme.error,
+                                    foregroundColor: scheme.onError,
+                                    minimumSize: const Size.fromHeight(44),
+                                  ),
+                                  onPressed: () {
+                                    hapticFeedback();
+                                    sendInstructions("s");
+                                  },
+                                  icon: const Icon(Icons.stop_circle_rounded),
+                                  label: const Text("PARAR", style: TextStyle(fontWeight: FontWeight.bold)),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ),
                     ),
                   ),
                 ),
-
-              ControlType.voice =>
-                SizedBox(
-                  width: 200,
-                  height: 200,
-                  child: ProgressiveButton(
-                    duration: 8, 
-                    downAction: ({required reenable}) => startVoice(context, reenable), 
-                    upAction: endVoice,
-                    initEnabled: voiceInitialized.value,
-                    iconData: Icons.mic,
-                    iconSize: 70,
-                  )
-                )
-            },
-            const ClawButton(),
-          ],
+                const SizedBox(width: 8),
+                // ------------------------------------------------ social
+                Expanded(
+                  flex: 6,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _StatusBar(onDisconnect: _leave),
+                      const SizedBox(height: 6),
+                      const Expanded(
+                        child: Card(
+                          margin: EdgeInsets.zero,
+                          clipBehavior: Clip.antiAlias,
+                          child: SocialPanel(),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
-      ],
+      ),
+    );
+  }
+
+  void _joystickListener(StickDragDetails details) {
+    var joyX = normalizeStringLen(details.x, 5);
+    var joyY = normalizeStringLen(details.y, 5);
+    send("stick:$joyX;$joyY;${RobotState.clawClosed.value ? 1 : 0}");
+  }
+
+  void _joystickEnd() => send("stick:*;${RobotState.clawClosed.value ? 1 : 0}");
+
+  Widget _buildControl(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    switch (_control) {
+      case ControlType.joystick:
+        return FittedBox(
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Joystick(
+              listener: _joystickListener,
+              onStickDragEnd: _joystickEnd,
+              base: JoystickBase(color: scheme.primary.withValues(alpha: 0.75)),
+              stick: JoystickCustomStick(
+                shadowColor: scheme.primary.withValues(alpha: 0.5),
+                gradientColors: [scheme.primary, scheme.primaryContainer],
+              ),
+            ),
+          ),
+        );
+      case ControlType.area:
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: scheme.primaryContainer,
+              borderRadius: const BorderRadius.all(Radius.circular(16)),
+            ),
+            child: Stack(
+              children: [
+                Center(
+                  child: Text(
+                    "Arrastra el dedo en cualquier parte",
+                    style: TextStyle(color: scheme.onPrimaryContainer.withValues(alpha: 0.6)),
+                  ),
+                ),
+                JoystickArea(
+                  listener: _joystickListener,
+                  onStickDragEnd: _joystickEnd,
+                  base: const JoystickSquareBase(color: Color.fromARGB(0, 0, 0, 0), drawArrows: false),
+                  stick: JoystickCustomStick(
+                    size: 44,
+                    shadowColor: scheme.primary.withValues(alpha: 0.3),
+                    gradientColors: [scheme.primary, scheme.primary.withValues(alpha: 0.6)],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      case ControlType.voice:
+        return const VoicePanel();
+    }
+  }
+}
+
+// ------------------------------------------------------------------ garra
+class _ClawButton extends StatelessWidget {
+  const _ClawButton();
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: RobotState.clawClosed,
+      builder: (context, closed, _) {
+        final child = Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(closed ? Icons.back_hand_rounded : Icons.front_hand_outlined),
+            const SizedBox(width: 6),
+            Text(closed ? "Soltar" : "Agarrar"),
+          ],
+        );
+        void onPressed() {
+          hapticFeedback();
+          RobotState.clawClosed.value = !closed;
+          send("stick:*;${!closed ? 1 : 0}");
+        }
+
+        const size = Size.fromHeight(44);
+        return closed
+            ? FilledButton(style: FilledButton.styleFrom(minimumSize: size), onPressed: onPressed, child: child)
+            : FilledButton.tonal(style: FilledButton.styleFrom(minimumSize: size), onPressed: onPressed, child: child);
+      },
     );
   }
 }
 
-bool _useClaw = false, still = true;
+// ------------------------------------------------------------------ estado
+class _StatusBar extends StatelessWidget {
+  const _StatusBar({required this.onDisconnect});
 
-class ClawButton extends StatelessWidget {
-  const ClawButton({super.key});
+  final VoidCallback onDisconnect;
 
   @override
   Widget build(BuildContext context) {
-    return ThemedToggleButton(
-      initialState: _useClaw,
-      handler: (clawing) {
-        _useClaw = !_useClaw;
-        clawing.value = _useClaw;
+    final scheme = Theme.of(context).colorScheme;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+        child: ValueListenableBuilder<RobotStatus>(
+          valueListenable: RobotState.status,
+          builder: (context, status, _) {
+            final prox = status.proximity;
+            final near = prox != null && prox <= 15;
+            final action = actionLabels[status.action] ?? (status.action.isEmpty ? "Listo" : status.action);
+            return Row(
+              children: [
+                Text(emotionEmoji[status.emotion] ?? "🙂", style: const TextStyle(fontSize: 26)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(action, maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.titleSmall),
+                      Text("Ánimo: ${status.emotion}", maxLines: 1,
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant)),
+                    ],
+                  ),
+                ),
+                Tooltip(
+                  message: "Sensor de proximidad (0 = muy cerca)",
+                  child: Chip(
+                    visualDensity: VisualDensity.compact,
+                    backgroundColor: near ? scheme.errorContainer : null,
+                    avatar: Icon(Icons.sensors_rounded, size: 18, color: near ? scheme.error : null),
+                    label: Text(prox?.toString() ?? "--"),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                ValueListenableBuilder<bool>(
+                  valueListenable: RobotState.useAI,
+                  builder: (context, ai, _) => FilterChip(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: Gemini.isConfigured
+                        ? "Usar Gemini para entender la voz"
+                        : "Sin clave de Gemini: solo intérprete local",
+                    selected: ai && Gemini.isConfigured,
+                    avatar: const Icon(Icons.auto_awesome_rounded, size: 16),
+                    showCheckmark: false,
+                    label: const Text("IA"),
+                    onSelected: Gemini.isConfigured ? (v) => RobotState.useAI.value = v : null,
+                  ),
+                ),
+                IconButton(
+                  tooltip: "Mapa",
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _showMap(context),
+                  icon: const Icon(Icons.map_rounded),
+                ),
+                IconButton(
+                  tooltip: "Desconectar",
+                  visualDensity: VisualDensity.compact,
+                  onPressed: onDisconnect,
+                  icon: Icon(Icons.link_off_rounded, color: scheme.error),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
 
-        if (still) {
-          send("stick:0.000;0.000;${_useClaw ? 1 : 0}");
-        }
-      },
-      toggledIcon: const Icon(Icons.precision_manufacturing),
-      untoggledIcon: const Icon(Icons.precision_manufacturing_outlined),
-      iconSize: 100,
+  void _showMap(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Mapa aproximado"),
+        contentPadding: const EdgeInsets.all(12),
+        content: const SizedBox(
+          width: 240,
+          height: 240,
+          child: FittedBox(child: MapWidget()),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cerrar"))],
+      ),
     );
   }
 }

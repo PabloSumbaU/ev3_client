@@ -1,5 +1,7 @@
 # ev3_client Application
 
+> **Novedades:** voz que funciona sin internet, botón tocar-para-hablar, acciones sociales, emociones y nueva interfaz. Ver [CAMBIOS.md](CAMBIOS.md).
+
 ## Summary
 This project is a client application to control an EV3 LEGO Mindstorms robot. Note that this app was designed and tested in Android; while the whole app is written in Flutter, there's no guarantee that it will work in other platforms.
 This application was designed following a client-server architecture, with the server being a Python script running on the robot on top of the ev3dev software. The communication is handled in typical client-server fashion, sending messages back and forth between the two as needed; the specifics are detailed below.
