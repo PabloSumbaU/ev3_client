@@ -88,3 +88,12 @@ Desde terminal: `flutter run --dart-define=GOOGLE_API_KEY=TU_CLAVE`.
 - **Barra superior derecha:** cara y acción actual del robot, proximidad (se pone roja si hay algo muy cerca), chip **IA**, mapa y desconectar.
 - **Acciones:** toca una tarjeta y el robot la ejecuta; la tarjeta queda resaltada mientras dura. Abajo, las emociones cambian la cara del robot.
 - **Hablar:** escribe una frase y envíala, o toca el micrófono para que el robot repita lo que dices. Las frases rápidas sirven para guiar la interacción sin escribir.
+
+## Arreglo de compilación con Flutter reciente
+
+Las versiones nuevas de Flutter exigen versiones mínimas del plugin de Android y de Kotlin. Se cambió:
+
+- `android/settings.gradle`: Android Gradle Plugin `8.6.0` → `8.13.2` y Kotlin `1.9.22` → `2.3.21`.
+- `android/build.gradle`: el ajuste que fuerza `compileSdk 36` en los plugins ahora usa `finalizeDsl`, porque el plugin `vibration` fijaba 33 después y las librerías de AndroidX actuales exigen 34 o más.
+
+Con esto el APK de depuración compila (verificado con `flutter build apk --debug`). Seguirá apareciendo un aviso de que Gradle 8.14 "pronto" dejará de ser soportado; es solo un aviso.
