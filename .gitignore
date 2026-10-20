@@ -43,3 +43,6 @@ app.*.map.json
 /android/app/release
 
 /lib/test
+
+# Contiene la clave de Gemini: no subir
+.vscode/launch.json

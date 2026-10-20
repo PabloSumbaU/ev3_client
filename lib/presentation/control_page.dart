@@ -311,7 +311,7 @@ class _StatusBar extends StatelessWidget {
                   builder: (context, ai, _) => FilterChip(
                     visualDensity: VisualDensity.compact,
                     tooltip: Gemini.isConfigured
-                        ? "Usar Gemini para entender la voz"
+                        ? "IA: si el intérprete local no entiende una orden de voz, se la pregunta a Gemini"
                         : "Sin clave de Gemini: solo intérprete local",
                     selected: ai && Gemini.isConfigured,
                     avatar: const Icon(Icons.auto_awesome_rounded, size: 16),

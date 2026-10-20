@@ -65,19 +65,24 @@ class VoiceService {
     return null;
   }
 
+  /// Idioma forzado al compilar (opcional): --dart-define=STT_LOCALE=es_EC
+  static const String _forcedLocale = String.fromEnvironment("STT_LOCALE", defaultValue: '');
+
   Future<String> _pickSpanishLocale() async {
+    if (_forcedLocale.isNotEmpty) return _forcedLocale;
+    // es_ES primero: es el que funcionaba en la versión original. Antes se
+    // tomaba el idioma del sistema y en algunos teléfonos el reconocedor
+    // terminaba escuchando en inglés ("address in centimeter").
     try {
-      final system = await _stt.systemLocale();
-      if (system != null && system.localeId.toLowerCase().startsWith('es')) {
-        return system.localeId;
-      }
       final locales = await _stt.locales();
-      const preferred = ['es_EC', 'es-EC', 'es_419', 'es-419', 'es_US', 'es-US', 'es_MX', 'es-MX', 'es_ES', 'es-ES'];
+      final ids = locales.map((l) => l.localeId).toList();
+      _log.info("Idiomas de voz disponibles: ${ids.where((i) => i.toLowerCase().startsWith('es')).join(', ')}");
+      const preferred = ['es_ES', 'es-ES', 'es_US', 'es-US', 'es_419', 'es-419', 'es_MX', 'es-MX', 'es_EC', 'es-EC'];
       for (final p in preferred) {
-        if (locales.any((l) => l.localeId == p)) return p;
+        if (ids.contains(p)) return p;
       }
-      final anySpanish = locales.where((l) => l.localeId.toLowerCase().startsWith('es'));
-      if (anySpanish.isNotEmpty) return anySpanish.first.localeId;
+      final anySpanish = ids.where((i) => i.toLowerCase().startsWith('es'));
+      if (anySpanish.isNotEmpty) return anySpanish.first;
     } catch (e) {
       _log.warning("No se pudo obtener la lista de idiomas: $e");
     }
@@ -243,23 +248,27 @@ Orden: """;
 /// hay clave, usa el intérprete local. Con [useAI] = false usa solo el local.
 Future<InterpretResult> interpretCommand(String spoken, {required bool useAI}) async {
   _log.fine("Orden: $spoken");
-  String? note;
 
-  if (useAI && Gemini.isConfigured) {
-    try {
-      final text = (await Gemini.generate(basePrompt + spoken))?.trim() ?? '?';
-      _log.fine("Gemini: $text");
-      if (text != '?') {
-        final parsed = parseSpanishCommand(text);
-        if (!parsed.isEmpty) return InterpretResult(parsed, "IA");
-      }
-    } on TimeoutException {
-      note = "Gemini tardó demasiado; se usó el intérprete local";
-    } catch (e) {
-      _log.severe("Error con Gemini: $e");
-      note = "Gemini no respondió; se usó el intérprete local";
-    }
+  // 1) Intérprete local: instantáneo y sin internet.
+  final local = parseSpanishCommand(spoken);
+  if (!local.isEmpty || !useAI || !Gemini.isConfigured) {
+    return InterpretResult(local, "Local");
   }
 
-  return InterpretResult(parseSpanishCommand(spoken), "Local", note: note);
+  // 2) Si no entendió nada y la IA está activa, se le pide a Gemini que
+  //    reescriba la orden con frases simples y se vuelve a interpretar.
+  try {
+    final text = (await Gemini.generate(basePrompt + spoken))?.trim() ?? '?';
+    _log.fine("Gemini: $text");
+    if (text != '?') {
+      final parsed = parseSpanishCommand(text);
+      if (!parsed.isEmpty) return InterpretResult(parsed, "IA");
+    }
+    return InterpretResult(local, "Local");
+  } on TimeoutException {
+    return InterpretResult(local, "Local", note: "La IA tardó demasiado");
+  } catch (e) {
+    _log.severe("Error con Gemini: $e");
+    return InterpretResult(local, "Local", note: "La IA no respondió");
+  }
 }

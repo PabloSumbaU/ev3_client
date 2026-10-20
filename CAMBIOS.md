@@ -97,3 +97,21 @@ Las versiones nuevas de Flutter exigen versiones mínimas del plugin de Android 
 - `android/build.gradle`: el ajuste que fuerza `compileSdk 36` en los plugins ahora usa `finalizeDsl`, porque el plugin `vibration` fijaba 33 después y las librerías de AndroidX actuales exigen 34 o más.
 
 Con esto el APK de depuración compila (verificado con `flutter build apk --debug`). Seguirá apareciendo un aviso de que Gradle 8.14 "pronto" dejará de ser soportado; es solo un aviso.
+
+## Conversación con IA (pestaña "Conversar (IA)")
+
+El niño habla con el robot y Gemini responde como **Lumi**. El robot dice la respuesta en voz alta, pone la cara de la emoción y, si el niño lo pide ("¡bailemos!", "cuéntame un chiste"), ejecuta la acción. La conversación tiene memoria hasta que se toca **Nueva conversación**.
+
+La personalidad está en `lib/infrastructure/conversation.dart` (`systemPrompt`):
+- frases muy cortas, cálidas, en español latinoamericano;
+- nunca da consejos médicos ni habla de diagnósticos: deriva a doctores, enfermeras o padres;
+- consuela y sugiere hablar con un adulto si el niño expresa miedo o dolor;
+- no pide datos personales y no usa emojis (el robot los leería).
+
+Necesita la clave de Gemini (`--dart-define=GOOGLE_API_KEY=...`) e internet en el teléfono. Si el modelo configurado no existe para la clave, la app prueba otros automáticamente (`gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash`, `gemini-2.5-flash`).
+
+## Otros arreglos tras la primera prueba
+
+- **El reconocimiento de voz escuchaba en inglés** ("address in centimeter"): ahora se usa español de España (`es_ES`) primero, como en la versión original. Se puede forzar otro con `--dart-define=STT_LOCALE=es_EC`.
+- **Órdenes de voz más rápidas**: primero se usa el intérprete local (instantáneo); Gemini solo se consulta si el local no entendió nada y el chip **IA** está activo.
+- `.vscode/launch.json` queda fuera de git porque contiene la clave.

@@ -6,6 +6,7 @@ import 'package:vibration/vibration.dart';
 import '../../infrastructure/socket_connection.dart';
 import '../../infrastructure/voice_recognition.dart';
 import '../robot_state.dart';
+import 'conversation_panel.dart';
 
 void _tap() async {
   if (await Vibration.hasVibrator()) Vibration.vibrate(duration: 30);
@@ -62,18 +63,19 @@ class SocialPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const DefaultTabController(
-      length: 2,
+      length: 3,
       child: Column(
         children: [
           TabBar(
             labelPadding: EdgeInsets.zero,
             tabs: [
-              Tab(height: 36, icon: null, text: "Acciones"),
+              Tab(height: 36, text: "Acciones"),
               Tab(height: 36, text: "Hablar"),
+              Tab(height: 36, text: "Conversar (IA)"),
             ],
           ),
           Expanded(
-            child: TabBarView(children: [_ActionsTab(), _SpeakTab()]),
+            child: TabBarView(children: [_ActionsTab(), _SpeakTab(), ConversationPanel()]),
           ),
         ],
       ),
