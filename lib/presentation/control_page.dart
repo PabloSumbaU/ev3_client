@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_joystick/flutter_joystick.dart';
-import 'package:flutter_vibrate/flutter_vibrate.dart';
+import 'package:vibration/vibration.dart';
 import 'package:logging/logging.dart';
 
 import './components/themed_toggle_button.dart';
@@ -22,8 +22,8 @@ import '../infrastructure/voice_recognition.dart';
 
 final Logger _log = Logger("Control");
 void hapticFeedback() async {
-  if (await Vibrate.canVibrate) {
-    Vibrate.feedback(FeedbackType.light);
+  if (await Vibration.hasVibrator() ?? false) {
+    Vibration.vibrate(duration: 50); // 50ms para un feedback táctil ligero
   }
 }
 
@@ -301,9 +301,9 @@ class Controls extends HookWidget {
                 Joystick(
                   listener: _joystickListener,
                   onStickDragEnd: () => send("stick:*;${_useClaw ? 1 : 0}"),
-                  base: JoystickBase(color: Theme.of(context).primaryColor.withOpacity(0.75),),
+                  base: JoystickBase(color: Theme.of(context).primaryColor.withValues(alpha: 0.75),),
                   stick: JoystickCustomStick(
-                    shadowColor: Theme.of(context).primaryColor.withOpacity(0.5),
+                    shadowColor: Theme.of(context).primaryColor.withValues(alpha: 0.5),
                     gradientColors: [
                       Theme.of(context).primaryColor, 
                       Theme.of(context).highlightColor,
@@ -317,7 +317,7 @@ class Controls extends HookWidget {
                   height: 200,
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      color: Theme.of(context).primaryColor.withOpacity(0.75),
+                      color: Theme.of(context).primaryColor.withValues(alpha: 0.75),
                       borderRadius: const BorderRadius.all(Radius.circular(15)),
                     ),
                     child: SafeArea(

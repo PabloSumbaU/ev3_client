@@ -9,7 +9,7 @@ class JoystickCustomStick extends StatelessWidget {
     gradientColors,
     super.key,
   }): 
-  shadowColor = shadowColor ?? Colors.blue.withOpacity(0.5),
+  shadowColor = shadowColor ?? Colors.blue.withValues(alpha: 0.5),
   gradientColors = gradientColors ?? [Colors.lightBlue.shade900,Colors.lightBlue.shade400]
   ;
 

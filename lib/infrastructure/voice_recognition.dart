@@ -5,30 +5,47 @@ import 'package:speech_to_text/speech_to_text.dart';
 
 Logger _log = Logger("Voice recognition");
 
-// TODO: Reenable voice recognition on reconnection
-
 class VoiceRecognition {
   static SpeechToText? _stt;
   static bool _speechEnabled = false;
-  static final options = SpeechListenOptions(partialResults: false);
+
+  // Se define la configuración de escucha incluyendo el idioma
+  static final options = SpeechListenOptions(
+    partialResults: false,
+    cancelOnError: true,
+    listenMode: ListenMode.dictation,
+    localeId: "es_ES",
+  );
 
   VoiceRecognition._();
 
   static Future<VoiceRecognition?> getInstance(void Function() onError) async {
-    if (! await Permission.microphone.isGranted) {
-      if (await Permission.microphone.isPermanentlyDenied) {
-        _log.warning("Microphone permission is permanently denied");
-      } else {
-        _log.fine("Requesting microphone permission...");
-        await Permission.microphone.request();
-      }
+    var status = await Permission.microphone.status;
+
+    if (!status.isGranted) {
+      _log.fine("Requesting microphone permission...");
+      status = await Permission.microphone.request();
     }
 
-    if (_stt == null) {
-      _log.fine("Instance requested");
+    if (status.isPermanentlyDenied) {
+      _log.warning("Microphone permission is permanently denied");
+      onError();
+      return null;
+    }
+
+    if (!status.isGranted) {
+      _log.warning("Microphone permission not granted");
+      onError();
+      return null;
+    }
+
+    if (_stt == null || !_speechEnabled) {
+      _log.fine("Initializing SpeechToText...");
       _stt = SpeechToText();
-      _speechEnabled = await _stt!.initialize();
-      _log.fine("STT initialized");
+      _speechEnabled = await _stt!.initialize(
+        onError: (errorNotification) => _log.severe("STT Error: $errorNotification"),
+        onStatus: (status) => _log.fine("STT Status: $status"),
+      );
     }
 
     if (_speechEnabled) {
@@ -46,19 +63,30 @@ class VoiceRecognition {
   Future<void> listen(Function(String) resultHandler) async {
     _log.fine("Listening started...");
 
-    await _stt!.listen(onResult: (result) {
-      _log.finest("Recognized: ${result.recognizedWords}");
-      resultHandler(result.recognizedWords);
-    }, listenOptions: options);
+    if (_stt!.isListening) {
+      await _stt!.stop();
+    }
+
+    await _stt!.listen(
+      onResult: (result) {
+        _log.finest("Recognized: ${result.recognizedWords}");
+        if (result.finalResult || result.recognizedWords.isNotEmpty) {
+          resultHandler(result.recognizedWords);
+        }
+      },
+      listenOptions: options,
+    );
   }
 
   bool isListening() {
-    return _stt!.isListening;
+    return _stt?.isListening ?? false;
   }
 
   Future<void> stop() async {
-    await _stt!.stop();
-    _log.fine("Listening stopped");
+    if (_stt != null && _stt!.isListening) {
+      await _stt!.stop();
+      _log.fine("Listening stopped");
+    }
   }
 }
 
@@ -87,15 +115,15 @@ List<String>? parseInput(String input) {
   }
 }
 
-
 final instructionMap = {
-  "adelante": "f",  //forward
-  "atrás": "b",     //backward
-  "izquierda": "l", //left
-  "derecha": "r",   //right
-  "agarrar": "p",   //pick up
-  "soltar": "d"  ,  //drop
-  "?": null,        //invalid
+  "adelante": "f",
+  "atrás": "b",
+  "atras": "b",
+  "izquierda": "l",
+  "derecha": "r",
+  "agarrar": "p",
+  "soltar": "d",
+  "?": null,
 };
 
 String? _translateInstructions(String instructionString) {
@@ -107,31 +135,41 @@ String? _translateInstructions(String instructionString) {
   final instructions = instructionString.split(";");
 
   final instructionList = instructions.map((e) {
-    final instruction = parseInput(e.replaceAll(" ", ""));
+    final instruction = parseInput(e.replaceAll(" ", "").toLowerCase());
 
-    return instruction!.map((e) { 
-      if (instructionMap.containsKey(e)) {
-        return instructionMap[e];
+    if (instruction == null) return null;
+
+    return instruction.map((item) {
+      if (instructionMap.containsKey(item)) {
+        return instructionMap[item];
       }
-
-      return e;
+      return item;
     }).join('-');
-  }).toList();
+  }).whereType<String>().toList();
 
   _log.finer("Instruction set: $instructionList");
 
-  return instructionList.join(';');
+  return instructionList.isEmpty ? null : instructionList.join(';');
 }
 
 const basePrompt = 
-"Para la siguiente orden genera un conjunto de instrucciones. Las posibles son: "
-"adelante, atrás, izquierda, derecha, agarrar, soltar. Agrega la distancia si es "
-"aplicable. (ejemplo de respuesta: adelante:3m; izquierda; atrás:20s). Procura "
-"que tu respuesta contenga únicamente el conjunto de instrucciones y no asumas"
-"nada más allá de lo ordenado. Si la orden no tiene sentido, retorna '?'. Orden: ";
+    "Para la siguiente orden genera un conjunto de instrucciones. Las posibles son: "
+    "adelante, atrás, izquierda, derecha, agarrar, soltar. Agrega la distancia o tiempo si es "
+    "aplicable. (ejemplo de respuesta: adelante:3m; izquierda; atrás:20s). Procura "
+    "que tu respuesta contenga únicamente el conjunto de instrucciones separadas por punto y coma, "
+    "sin texto adicional ni explicaciones. Si la orden no tiene sentido, retorna únicamente '?'. Orden: ";
 
 Future<String?> getInstructionSet(String voiceCommand) async {
-  Gemini.initialize();
-  _log.finer("Command: $voiceCommand");
-  return _translateInstructions((await Gemini.generate(basePrompt + voiceCommand)).text!.trim());
+  try {
+    Gemini.initialize();
+    _log.finer("Command: $voiceCommand");
+
+    final response = await Gemini.generate(basePrompt + voiceCommand);
+    final text = response.text?.trim() ?? '?';
+
+    return _translateInstructions(text);
+  } catch (e) {
+    _log.severe("Error al comunicarse con Gemini o procesar: $e");
+    return null;
+  }
 }

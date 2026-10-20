@@ -22,20 +22,20 @@ class ImageData {
   final Color? background;
 }
 
-enum Commands {
-  render, clear
-}
+enum Commands { render, clear }
 
 Completer<void> mapReady = Completer.sync();
 
 class TerrainMap {
-  // Robot is around 30 cm in length (~27 to be more precise)
-  TerrainMap({required this.getSensorValue, required this.getPosition}): _map = HashMap(), currentQuadrant = const Point(0, 0) {
+  TerrainMap({required this.getSensorValue, required this.getPosition})
+      : _map = HashMap(),
+        currentQuadrant = const Point(0, 0) {
     () async {
-      _log.info("Just testing info colors. :)");
-      _log.config("Just testing config colors. :)");
+      _log.info("Mapping engine starting...");
       await _ensureChunks(currentQuadrant);
-      mapReady.complete();
+      if (!mapReady.isCompleted) {
+        mapReady.complete();
+      }
     }();
   }
 
@@ -45,21 +45,23 @@ class TerrainMap {
   (double x, double y, double angle) Function() getPosition;
   static const renderDistance = 1;
   static const mapSize = _Chunk.chunkSize * (2 * renderDistance + 1);
-  static const timeBetweenUpdates = 20; //Time between map updates in milliseconds
-  static const timeBetweenSaves = 30000; //Time between map saves in milliseconds
+  static const timeBetweenUpdates = 20; // ms
+  static const timeBetweenSaves = 30000; // ms
 
   static Future<Worker<Commands, img.Image>> startConcurrent() async {
     var worker = await Worker.getInstance<Commands, img.Image>(
       runnable: (sendPort, receivePort, workerState, store) async {
         Completer<void> dataCollected = Completer.sync();
         int count = 1;
-        
+
         Timer.periodic(const Duration(seconds: 1), (timer) {
           var value = store["sensorValue"];
           _log.finer("Value: $value");
-          
+
           if (value != null) {
-            dataCollected.complete();
+            if (!dataCollected.isCompleted) {
+              dataCollected.complete();
+            }
             timer.cancel();
             return;
           }
@@ -72,63 +74,62 @@ class TerrainMap {
 
         final map = TerrainMap(
           getSensorValue: () {
-            List<String> data = store["sensorValue"].split(';');
+            String? rawData = store["sensorValue"];
+            if (rawData == null) return -1;
+
+            List<String> data = rawData.split(';');
             for (String string in data) {
               List<String> value = string.split(':');
-
-              if (value[0] != 'ir') {
-                continue;
+              if (value.length >= 2 && value[0] == 'ir') {
+                return int.tryParse(value[1]) ?? -1;
               }
-              
-              return int.parse(value[1]);
             }
-
             return -1;
           },
-
           getPosition: () {
-            if (store["position"] == null) {
-              //FIXME: Race condition here. It's possible to reach here before the position is initialized.
-              // Occurences: 1 [VERY RARE]
-              _log.warning("Position is null, probably uninitialized");
+            String? rawPos = store["position"];
+            if (rawPos == null) {
+              _log.warning("Position is null, returning default");
+              var prev = store['previous_pos'];
+              if (prev is (double, double, double)) return prev;
               return (0.0, 0.0, 0.0);
             }
 
-            List<String> data = store["position"].split(';');
-            var values = data.map((e) => double.parse(e)).toList();
+            try {
+              List<String> data = rawPos.split(';');
+              var values = data.map((e) => double.parse(e)).toList();
 
-            //Dealing with TCP shenanigans, return previous position if we don't have a new one (cause it's invalid)
-            if (values.length == 3) {
-              store['previous_pos'] = values;
-              return (values[0], values[1], values[2]);
-            } else {
-              return store['previous_pos'];
+              if (values.length >= 3) {
+                final posTuple = (values[0], values[1], values[2]);
+                store['previous_pos'] = posTuple;
+                return posTuple;
+              }
+            } catch (e) {
+              _log.warning("Error parsing position in worker: $e");
             }
-            
+
+            var prev = store['previous_pos'];
+            if (prev is (double, double, double)) return prev;
+            return (0.0, 0.0, 0.0);
           },
         );
 
-        await mapReady.future; //Ensure the initial chunks are loaded before starting
-
+        await mapReady.future;
         store['map'] = map;
 
-        Timer.periodic(const Duration(milliseconds: timeBetweenUpdates), 
-        (timer) {
+        Timer.periodic(const Duration(milliseconds: timeBetweenUpdates), (timer) {
           map.update();
-
           if (workerState() == WorkerState.terminated) {
             timer.cancel();
           }
         });
 
-        Timer.periodic(const Duration(milliseconds: timeBetweenSaves),
-        (timer) {
+        Timer.periodic(const Duration(milliseconds: timeBetweenSaves), (timer) {
           map.save();
           map._unloadChunks();
-
           _log.finer("Map saved");
 
-          if(workerState() == WorkerState.terminated) {
+          if (workerState() == WorkerState.terminated) {
             timer.cancel();
           }
         });
@@ -141,16 +142,15 @@ class TerrainMap {
         if (map == null) {
           return imaging.clearImage(mapSize, mapSize);
         }
-        
+
         switch (data) {
           case Commands.render:
             return imaging.fromDoubleList(map.getCurrentMapData(), mapSize, mapSize, foreground, background);
-
           case Commands.clear:
             return imaging.clearImage(mapSize, mapSize);
         }
       },
-      workerName: "Map"
+      workerName: "Map",
     );
 
     socket.addSensorCallback((message) {
@@ -164,8 +164,6 @@ class TerrainMap {
     return worker;
   }
 
-  ///This function ensures the required chunk and the ones surrounding it in a radius around the center point [quadrant]
-  ///are created. The radius is the render distance of the map. The specific amount of chunks created is (`renderDistance` * 2 + 1)².
   Future<void> _ensureChunks(Point<int> quadrant) async {
     for (int x = -renderDistance; x <= renderDistance; x++) {
       for (int y = -renderDistance; y <= renderDistance; y++) {
@@ -187,7 +185,6 @@ class TerrainMap {
     }
 
     _map[quadrant] = newChunk;
-
     return newChunk;
   }
 
@@ -217,8 +214,6 @@ class TerrainMap {
     return chunks;
   }
 
-  ///Creates a list representing the data of the map at and around the center point [quadrant] with the radius being the render
-  ///distance of the map.
   List<double> getMapData(Point<int> quadrant) {
     List<double> data = [];
 
@@ -230,10 +225,10 @@ class TerrainMap {
 
           if (chunk == null) {
             _log.severe("Failed to get chunk at $newQuadrant");
-            throw StateError("Failed to get chunk at $newQuadrant");	
+            throw StateError("Failed to get chunk at $newQuadrant");
           }
 
-          data.addAll(chunk.mapRegion[chunkRow]); 
+          data.addAll(chunk.mapRegion[chunkRow]);
         }
       }
     }
@@ -243,36 +238,31 @@ class TerrainMap {
 
   List<double> getCurrentMapData() {
     return getMapData(currentQuadrant);
-  } 
+  }
 
-  ///This function returns the quadrant of the given cell.
   Point<int> getQuadrant(Point<int> cell) {
-    return Point<int>((cell.x / _Chunk.chunkSize).floor(), (cell.y / _Chunk.chunkSize).floor());
+    return Point<int>(
+      (cell.x / _Chunk.chunkSize).floor(),
+      (cell.y / _Chunk.chunkSize).floor(),
+    );
   }
 
   void update() async {
-    if (_calibrating) {
-      return;
-    }
+    if (_calibrating) return;
 
     final (x, y, angle) = getPosition();
-    //FIXME: App became unresponsive and robot got stuck.
-    // Occurences: 1 [VERY RARE]
-    //↑ Hasn't happened again, can't reproduce for now.
-    //_log.finest("Position: $x, $y, $angle");
 
-    Point<double> position = Point(x, y);
-    position = Point(position.x + 15, position.y + 15);
-
+    Point<double> position = Point(x + 15, y + 15);
     double lookAngle = angle;
-
     int sensorValue = getSensorValue();
 
+    if (sensorValue < 0) return; // Si el sensor no devuelve valor válido, omitir
+
     double distance = _sensorToCm(sensorValue);
-    
+
     Point<int> cellDistance = Point<int>(
       (distance * cos(deg2rad(lookAngle)) / _Chunk.cellSize).ceil(),
-      (distance * sin(deg2rad(lookAngle)) / _Chunk.cellSize).ceil()
+      (distance * sin(deg2rad(lookAngle)) / _Chunk.cellSize).ceil(),
     );
 
     Point<int> cellPosition = Point(position.x.floor(), position.y.floor());
@@ -285,10 +275,7 @@ class TerrainMap {
     Point<int> quadrant = getQuadrant(affectedCell);
     _Chunk? affectedChunk = _map[quadrant];
 
-    //_log.finest("Quadrant: $quadrant, affected cell: $affectedCell, certainty: $certainty");
-
     affectedChunk ??= await _loadChunkOrCreate(quadrant);
-
     affectedChunk.setCell(affectedCell, certainty);
   }
 
@@ -296,68 +283,46 @@ class TerrainMap {
     for (var chunk in _map.values) {
       chunk.save();
     }
-    //TODO: We need a way of deleting the map files too!
   }
 
   Future<List<int>> _getSensorValues([Duration dur = const Duration(seconds: 3)]) async {
     _log.finer("Collecting sensor values with duration $dur");
-    Completer<List<int>> dataCollected = Completer.sync();
     List<int> sensorValues = [];
-    bool stop = false;
+    
+    final stopwatch = Stopwatch()..start();
+    while (stopwatch.elapsed < dur) {
+      int val = getSensorValue();
+      if (val >= 0) sensorValues.add(val);
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
 
-    Timer(dur, () {
-      stop = true;
-      _log.finer("Time's up!");
-
-      dataCollected.complete(sensorValues);
-    });
-
-    Timer.periodic(const Duration(milliseconds: 100), (timer) {
-      sensorValues.add(getSensorValue());
-
-      if (stop) {
-        timer.cancel();
-      }
-    });
-
-    return await dataCollected.future;
+    return sensorValues.isEmpty ? [50] : sensorValues;
   }
 
   double _sensorToCm(int sensorValue) {
-    // Sensor max distance (100%) is equal to around 70 cm
     return sensorValue * 70 / 100;
   }
 
   double _baselineVal = -1;
   bool _calibrating = false;
 
-  Future<double> _baseline([recalibrate = false]) async {
-    Completer<double> dataCollected = Completer.sync();
-    
+  Future<double> _baseline([bool recalibrate = false]) async {
     if (_baselineVal != -1 && !recalibrate) {
       return _baselineVal;
     }
 
     _calibrating = true;
-
     _log.fine("Calibrating sensor baseline...");
 
     List<int> sensorValues = await _getSensorValues();
 
-    _log.finest("Sensor data collected: $sensorValues");
-
     _baselineVal = sensorValues.reduce((a, b) => a + b) / sensorValues.length;
+    _baselineVal = _baselineVal.clamp(0.1, 100.0);
 
-    () async {
-      dataCollected.complete(_baselineVal.clamp(0.1, 100.0));
-      _calibrating = false;
-      _log.fine("Calibration done!");
-    }();
+    _calibrating = false;
+    _log.fine("Calibration done!");
 
-    //TODO: Double check this, I'm pretty sure it'd work if I await the completer future instead of the anonymous async function
-    // shenanigans.
-
-    return dataCollected.future;
+    return _baselineVal;
   }
 
   Future<double> _certainty(int sensorValue) async {
@@ -369,58 +334,37 @@ class TerrainMap {
 }
 
 class _Chunk extends Serializable<_Chunk> {
-  _Chunk(this.quadrant): 
-    coordBound = Point<int>(quadrant.x * cellSize * chunkSize, quadrant.y * cellSize * chunkSize),
-    cellBound = Point<int>(quadrant.x * chunkSize, quadrant.y * chunkSize),
-    mapRegion = 
-    List<List<double>>.generate(
-      chunkSize, 
-      (index) => 
-        List<double>.generate(
-          chunkSize, 
-          (index) => 0.0, 
-          growable: false
-        ),
-      growable: false
-    );
+  _Chunk(this.quadrant)
+      : coordBound = Point<int>(quadrant.x * cellSize * chunkSize, quadrant.y * cellSize * chunkSize),
+        cellBound = Point<int>(quadrant.x * chunkSize, quadrant.y * chunkSize),
+        mapRegion = List<List<double>>.generate(
+          chunkSize,
+          (_) => List<double>.filled(chunkSize, 0.0, growable: false),
+          growable: false,
+        );
 
-  _Chunk._fromJson(this.quadrant, this.mapRegion):
-    coordBound = Point<int>(quadrant.x * cellSize * chunkSize, quadrant.y * cellSize * chunkSize),
-    cellBound = Point<int>(quadrant.x * chunkSize, quadrant.y * chunkSize);
+  _Chunk._fromJson(this.quadrant, this.mapRegion)
+      : coordBound = Point<int>(quadrant.x * cellSize * chunkSize, quadrant.y * cellSize * chunkSize),
+        cellBound = Point<int>(quadrant.x * chunkSize, quadrant.y * chunkSize);
 
-  static const cellSize = 30; //Cell size is 30 cm
-  static const chunkSize = 30;  //Chunk size is 30 cells
-  //Generate immutable matrix of chunkSize x chunkSize cells
+  static const cellSize = 30; // 30 cm
+  static const chunkSize = 30; // 30 celdas
   final List<List<double>> mapRegion;
-  
-  final Point<int> quadrant;  //Quadrant of the chunk
-  final Point<int> coordBound;  //Global coordinate of the top left corner of the chunk
-  final Point<int> cellBound; //Global cell of the top left corner of the chunk
-  
-  static Point<T> coordAbs<T extends num>(Point<T> coord) {
-    return Point(coord.x.abs() as T, coord.y.abs() as T);
-  }
 
-  Point<double> translate(Point<double> globalCoords) {
-    Point<int> temp = coordAbs(coordBound);
-    Point<double> quadrantCoord = Point(temp.x.toDouble(), temp.y.toDouble());
-    Point<double> global = coordAbs(globalCoords);
-
-    return coordAbs(global - quadrantCoord);
-  }
+  final Point<int> quadrant;
+  final Point<int> coordBound;
+  final Point<int> cellBound;
 
   Point<int> translateCell(Point<int> globalCell) {
-    Point<int> quadrantCell = coordAbs(cellBound);
-    Point<int> global = coordAbs(globalCell);
-
-    return coordAbs(global - quadrantCell);
+    return Point<int>(globalCell.x - cellBound.x, globalCell.y - cellBound.y);
   }
 
   void setCell(Point<int> affectedCellGlobal, double certainty) {
     Point<int> localCell = translateCell(affectedCellGlobal);
 
-    if (localCell.x < 0 || localCell.x > chunkSize || localCell.y < 0 || localCell.y > chunkSize) {
-      _log.warning("Cell is outside of chunk");
+    // CORREGIDO: Evita Index Out of Bounds usándod >= chunkSize
+    if (localCell.x < 0 || localCell.x >= chunkSize || localCell.y < 0 || localCell.y >= chunkSize) {
+      _log.warning("Cell $localCell is outside of chunk range");
       return;
     }
 
@@ -432,7 +376,7 @@ class _Chunk extends Serializable<_Chunk> {
     return <String, dynamic>{
       "quadrant_x": quadrant.x,
       "quadrant_y": quadrant.y,
-      "map_region": mapRegion
+      "map_region": mapRegion,
     };
   }
 
@@ -440,17 +384,15 @@ class _Chunk extends Serializable<_Chunk> {
     final json = await Serializable.loadData(quadrantFilename(quadrant));
 
     return _Chunk._fromJson(
-      Point<int>(json["quadrant_x"] as int, json["quadrant_y"] as int), 
-      castMatrix<double>(json["map_region"])
+      Point<int>(json["quadrant_x"] as int, json["quadrant_y"] as int),
+      castMatrix<double>(json["map_region"]),
     );
   }
 
   static String quadrantFilename(Point<int> quadrant) => "chunk_${quadrant.x}_${quadrant.y}.json";
 
   @override
-  String filename() {
-    return quadrantFilename(quadrant);
-  }
+  String filename() => quadrantFilename(quadrant);
 
   static Future<bool> isSaved(Point<int> quadrant) => Serializable.fileExists(quadrantFilename(quadrant));
 }

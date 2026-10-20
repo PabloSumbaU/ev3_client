@@ -16,3 +16,12 @@ subprojects {
 tasks.register("clean", Delete) {
     delete rootProject.buildDir
 }
+
+subprojects {
+    project.pluginManager.withPlugin('com.android.library') {
+        if (project.android.namespace == null) {
+            project.android.namespace = "com.example.${project.name.replace('-', '_')}"
+        }
+        project.android.compileSdkVersion 36
+    }
+}

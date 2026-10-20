@@ -77,7 +77,7 @@ class IPFormState extends State<IPForm> {
           ScaffoldMessenger.of(context).showSnackBar(_successfulConnection);
           Navigator.push(
             context, 
-            MaterialPageRoute(builder: (context) => ControlPage()),
+            MaterialPageRoute(builder: (context) => const ControlPage()),
           );
         } else {
           ScaffoldMessenger.of(context).showSnackBar(_failedConnection);

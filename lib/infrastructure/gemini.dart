@@ -22,7 +22,7 @@ abstract class Gemini {
       throw ArgumentError("API Key not set or empty!");
     }
 
-    model = GenerativeModel(model: "gemini-1.5-flash-latest", apiKey: key);
+    model = GenerativeModel(model: "gemini-2.5-flash", apiKey: key);
   }
 
   static Future<GenerateContentResponse> generate(String prompt) async {
