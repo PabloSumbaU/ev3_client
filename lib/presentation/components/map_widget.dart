@@ -18,6 +18,7 @@ class MapWidget extends StatefulWidget {
 
   static void terminate() {
     _MapWidgetState.mapWorker?.terminate();
+    _MapWidgetState.mapWorker = null;
   }
   
   @override
@@ -29,6 +30,7 @@ class MapWidget extends StatefulWidget {
 class _MapWidgetState extends State<MapWidget> {
   static Worker<Commands, img.Image>? mapWorker;
   Uint8List? mapImageBytes;
+  Timer? _timer;
 
   @override
   void initState() {
@@ -38,7 +40,9 @@ class _MapWidgetState extends State<MapWidget> {
 
     initializeWorker();
 
-    Timer.periodic(const Duration(milliseconds: TerrainMap.timeBetweenUpdates), (timer) {
+    // Antes este temporizador nunca se cancelaba y el worker se terminaba al
+    // cerrar el widget; ahora el mapa sigue vivo y se puede abrir varias veces.
+    _timer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
       updateMapImage();
     });
   }
@@ -50,11 +54,12 @@ class _MapWidgetState extends State<MapWidget> {
   }
 
   void updateMapImage() async {
-    if(mapWorker == null) return;
+    if(mapWorker == null || !mounted) return;
     
     img.Image image = await mapWorker!.send(Commands.render);
 
     Uint8List newImageBytes = img.PngEncoder().encode(image);
+    if (!mounted) return;
     setState(() {
       mapImageBytes = newImageBytes;
     });
@@ -77,7 +82,7 @@ class _MapWidgetState extends State<MapWidget> {
 
   @override
   void dispose() {
+    _timer?.cancel();
     super.dispose();
-    mapWorker?.terminate();
   }
 }

@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert' show utf8;
+import 'package:flutter/foundation.dart';
 import 'package:logging/logging.dart';
 
 final _log = Logger("Socket Connection");
@@ -9,11 +10,14 @@ Socket? _sensorSocket;
 Socket? _speechSocket;
 Socket? _positionSocket;
 
-List<void Function(String message)> _sensorCallbacks = [];
+final List<void Function(String message)> _sensorCallbacks = [];
 String _lastSensorValue = "";
-List<void Function(double x, double y, double angle)> _positionCallbacks = [];
+final List<void Function(double x, double y, double angle)> _positionCallbacks = [];
 
 const messageEnd = "|";
+
+/// Se pone en true si el robot cierra la conexión (p. ej. se apagó).
+final ValueNotifier<bool> connectionLost = ValueNotifier(false);
 
 /// Retorna true si el socket principal y el de audio están inicializados
 bool isConnected() {
@@ -27,37 +31,37 @@ Future<void> connect(
   int speechPort = 8002,
   int positionPort = 8003,
 ]) async {
+  connectionLost.value = false;
   try {
-    _mainSocket = await Socket.connect(ipAddress, port, timeout: const Duration(seconds: 15));
+    _mainSocket = await Socket.connect(ipAddress, port, timeout: const Duration(seconds: 10));
+    _mainSocket!.setOption(SocketOption.tcpNoDelay, true);
     _log.fine("Main socket connection established");
 
-    _sensorSocket = await Socket.connect(ipAddress, sensorPort, timeout: const Duration(seconds: 15));
+    _sensorSocket = await Socket.connect(ipAddress, sensorPort, timeout: const Duration(seconds: 10));
     _log.fine("Sensor socket connection established");
 
-    _speechSocket = await Socket.connect(ipAddress, speechPort, timeout: const Duration(seconds: 15));
+    _speechSocket = await Socket.connect(ipAddress, speechPort, timeout: const Duration(seconds: 10));
+    _speechSocket!.setOption(SocketOption.tcpNoDelay, true);
     _log.fine("Speech socket connection established");
 
-    _positionSocket = await Socket.connect(ipAddress, positionPort, timeout: const Duration(seconds: 15));
+    _positionSocket = await Socket.connect(ipAddress, positionPort, timeout: const Duration(seconds: 10));
     _log.fine("Position socket connection established");
 
-    _sensorListen((message) {
+    _listenMessages(_sensorSocket!, "Sensor", (message) {
       _lastSensorValue = message;
-      for (var callback in _sensorCallbacks) {
+      for (var callback in List.of(_sensorCallbacks)) {
         callback(message);
       }
     });
 
-    _positionListen((message) {
+    _listenMessages(_positionSocket!, "Position", (message) {
       try {
-        String data = message.split(messageEnd)[0];
-        List<String> parts = data.split(";");
-
+        List<String> parts = message.split(";");
         if (parts.length >= 3) {
           double x = double.parse(parts[0]);
           double y = double.parse(parts[1]);
           double angle = double.parse(parts[2]);
-
-          for (var callback in _positionCallbacks) {
+          for (var callback in List.of(_positionCallbacks)) {
             callback(x, y, angle);
           }
         }
@@ -74,15 +78,44 @@ Future<void> connect(
   }
 }
 
+/// Escucha un socket y entrega solo el ÚLTIMO mensaje completo de cada lote
+/// (los datos de sensor/posición viejos no sirven).
+void _listenMessages(Socket socket, String name, void Function(String) callback) {
+  var buffer = "";
+  socket.listen(
+    (event) {
+      buffer += utf8.decode(event, allowMalformed: true);
+      final parts = buffer.split(messageEnd);
+      buffer = parts.removeLast();
+      final complete = parts.where((p) => p.isNotEmpty);
+      if (complete.isNotEmpty) callback(complete.last);
+    },
+    onError: (error) => _log.severe("$name socket error: $error"),
+    onDone: () {
+      _log.warning("$name socket disconnected");
+      if (_mainSocket != null) connectionLost.value = true;
+    },
+  );
+}
+
 /// Envía comandos de movimiento al socket principal
 void send(String message) {
   if (_mainSocket == null) {
     _log.warning("Main socket is null. Message not sent.");
     return;
   }
-  _log.fine("Message sent to main socket: $message");
-  _mainSocket!.add(utf8.encode(message + messageEnd));
-  _mainSocket!.flush();
+  _log.finer("Message sent to main socket: $message");
+  try {
+    _mainSocket!.add(utf8.encode(message + messageEnd));
+  } catch (e) {
+    _log.severe("Error sending: $e");
+  }
+}
+
+/// Envía instrucciones de texto (voz o botones): p. ej. "f-20-cm;l;g".
+void sendInstructions(String instructions) {
+  if (instructions.isEmpty) return;
+  send("text:$instructions");
 }
 
 /// Envía texto para ser reproducido por voz en el parlante del robot
@@ -91,41 +124,26 @@ void sendSpeech(String message) {
     _log.warning("Speech socket is null. Speech message not sent.");
     return;
   }
-  _log.fine("Message sent to speech socket: $message");
-  
-  // Incluye el delimitador de fin de mensaje '|'
-  // Codifica explícitamente a UTF-8 (tildes y caracteres especiales)
-  // Forzar el envío inmediato
-  _speechSocket!.add(utf8.encode(message + messageEnd));
-  _speechSocket!.flush();
-}
-
-void _sensorListen(void Function(String message) callback) {
-  _sensorSocket?.listen(
-    (event) {
-      callback(utf8.decode(event).split(messageEnd)[0]);
-    },
-    onError: (error) => _log.severe("Sensor socket error: $error"),
-    onDone: () => _log.warning("Sensor socket disconnected"),
-  );
+  final clean = message.replaceAll(messageEnd, " ").trim();
+  if (clean.isEmpty) return;
+  _log.fine("Message sent to speech socket: $clean");
+  try {
+    _speechSocket!.add(utf8.encode(clean + messageEnd));
+  } catch (e) {
+    _log.severe("Error sending speech: $e");
+  }
 }
 
 void addSensorCallback(void Function(String message) callback) {
   _sensorCallbacks.add(callback);
 }
 
-String getLastSensorValue() {
-  return _lastSensorValue;
+void removeSensorCallback(void Function(String message) callback) {
+  _sensorCallbacks.remove(callback);
 }
 
-void _positionListen(void Function(String message) callback) {
-  _positionSocket?.listen(
-    (event) {
-      callback(utf8.decode(event).split(messageEnd)[0]);
-    },
-    onError: (error) => _log.severe("Position socket error: $error"),
-    onDone: () => _log.warning("Position socket disconnected"),
-  );
+String getLastSensorValue() {
+  return _lastSensorValue;
 }
 
 void addPositionCallback(void Function(double x, double y, double angle) callback) {
@@ -134,15 +152,16 @@ void addPositionCallback(void Function(double x, double y, double angle) callbac
 
 /// Cierra todas las conexiones activas y limpia los callbacks
 void disconnect() {
-  _mainSocket?.close();
-  _sensorSocket?.close();
-  _speechSocket?.close();
-  _positionSocket?.close();
-
+  final sockets = [_mainSocket, _sensorSocket, _speechSocket, _positionSocket];
   _mainSocket = null;
   _sensorSocket = null;
   _speechSocket = null;
   _positionSocket = null;
+  for (final s in sockets) {
+    try {
+      s?.destroy();
+    } catch (_) {}
+  }
 
   _sensorCallbacks.clear();
   _positionCallbacks.clear();

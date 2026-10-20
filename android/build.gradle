@@ -22,6 +22,11 @@ subprojects {
         if (project.android.namespace == null) {
             project.android.namespace = "com.example.${project.name.replace('-', '_')}"
         }
-        project.android.compileSdkVersion 36
+        // Algunos plugins (p. ej. vibration) fijan compileSdk 33 en su propio
+        // build.gradle, despues de este bloque. finalizeDsl lo corrige al final,
+        // porque las librerias de AndroidX actuales exigen compilar con 34+.
+        project.androidComponents.finalizeDsl { ext ->
+            ext.compileSdk = 36
+        }
     }
 }
